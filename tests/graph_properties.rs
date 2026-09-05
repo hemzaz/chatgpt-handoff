@@ -118,6 +118,32 @@ fn assert_branch_invariants(conversation: &Conversation, node_ids: &[String]) {
     }
 }
 
+/// Independent reference implementation of the chain `active_branch` should
+/// produce from a given node: follow `parent` until it runs out, breaks, or
+/// loops. Deliberately naive and unmemoized so it shares no logic with the
+/// implementation under test.
+fn reference_chain(conversation: &Conversation, start: &str) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut cursor = Some(start.to_string());
+    while let Some(id) = cursor {
+        if !seen.insert(id.clone()) {
+            break;
+        }
+        let Some(node) = conversation.node(&id) else {
+            break;
+        };
+        chain.push(id);
+        cursor = match node.parent.as_deref() {
+            Some(parent) if conversation.node(parent).is_some() && !seen.contains(parent) => {
+                Some(parent.to_string())
+            }
+            _ => None,
+        };
+    }
+    chain
+}
+
 proptest! {
     /// The headline guarantee: no arbitrary graph can panic or hang the walk,
     /// and whatever comes back is a real path through the mapping.
@@ -133,6 +159,42 @@ proptest! {
                         || !conversation.mapping.values().any(|n| n.message.is_some())
                 );
             }
+        }
+    }
+
+    /// The fallback claims to return the longest path, so no node may have a
+    /// strictly longer `parent` chain than the branch it produced. This is the
+    /// invariant that would have caught both the empty-`children` truncation
+    /// and the diamond shortcut: each measured depth on `children` while the
+    /// branch was reconstructed from `parent`.
+    #[test]
+    fn longest_path_really_is_the_longest_parent_chain(conversation in any_conversation()) {
+        let Ok(branch) = active_branch(&conversation) else {
+            return Ok(());
+        };
+        // Only the fallback promises maximality. A valid `current_node` picks a
+        // specific branch, which is allowed to be shorter than the longest one.
+        if branch.strategy != "longest-path" {
+            return Ok(());
+        }
+
+        for id in conversation.mapping.keys() {
+            let chain = reference_chain(&conversation, id);
+            prop_assert!(
+                chain.len() <= branch.node_ids.len(),
+                "node `{}` has a chain of {} but the branch is only {} long: {:?}",
+                id,
+                chain.len(),
+                branch.node_ids.len(),
+                branch.node_ids
+            );
+        }
+
+        // And the branch must itself be a real chain, not merely long enough.
+        if let Some(leaf) = branch.node_ids.last() {
+            let mut expected = reference_chain(&conversation, leaf);
+            expected.reverse();
+            prop_assert_eq!(&expected, &branch.node_ids);
         }
     }
 
