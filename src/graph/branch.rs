@@ -11,7 +11,7 @@
 //! Everything here is iterative and cycle-guarded. Exports are untrusted input:
 //! a hostile or merely corrupt file must not blow the stack or spin forever.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::error::GraphError;
 use crate::model::{Conversation, Message};
@@ -39,6 +39,14 @@ pub enum BranchWarning {
     /// The reconstructed branch contains no message-carrying node, even though
     /// the conversation has messages somewhere else in the graph.
     NoMessagesOnBranch,
+    /// A guessed branch recovered far fewer messages than the graph holds.
+    ///
+    /// Only ever emitted on the fallback path. On the normal path a branch that
+    /// omits messages is *correct* — abandoned regenerations are supposed to be
+    /// left out — but once we are guessing, a guess that captures a small
+    /// fraction of the graph usually means the export's `parent` links are
+    /// incomplete, and the user deserves to know before trusting the output.
+    PartialRecovery { recovered: usize, total: usize },
 }
 
 impl std::fmt::Display for BranchWarning {
@@ -65,6 +73,11 @@ impl std::fmt::Display for BranchWarning {
             BranchWarning::NoMessagesOnBranch => {
                 write!(f, "the reconstructed branch carries no messages")
             }
+            BranchWarning::PartialRecovery { recovered, total } => write!(
+                f,
+                "guessed branch recovered only {recovered} of {total} messages in the graph; \
+                 the export's parent links look incomplete"
+            ),
         }
     }
 }
@@ -207,8 +220,13 @@ impl BranchStrategy for LongestPathStrategy {
         "longest-path"
     }
 
-    /// Breadth-first over `children` from every root, then walk back up from
-    /// the deepest node found.
+    /// Pick the node with the longest `parent` chain, then walk back up from
+    /// it.
+    ///
+    /// Depth is measured along `parent` — the same edge [`walk_to_root`]
+    /// reconstructs with — and never along `children`; see
+    /// [`longest_parent_chain`] for why measuring on the other edge silently
+    /// dropped messages.
     ///
     /// Ties are broken by message count and then by lexicographically smallest
     /// id, because `HashMap` iteration order is not stable and two runs over the
@@ -220,7 +238,7 @@ impl BranchStrategy for LongestPathStrategy {
             });
         }
 
-        let deepest = match deepest_reachable(conversation) {
+        let deepest = match longest_parent_chain(conversation) {
             Some(id) => id,
             // A non-empty mapping always seeds at least one node, so this is
             // unreachable in practice; report it as an empty graph rather than
@@ -271,6 +289,20 @@ fn fall_back(
     let mut branch = LongestPathStrategy.resolve(conversation)?;
     warnings.push(BranchWarning::FellBackToLongestPath);
     warnings.append(&mut branch.warnings);
+
+    let recovered = branch.messages(conversation).len();
+    let total = conversation
+        .mapping
+        .values()
+        .filter(|node| node.has_message())
+        .count();
+    // Half is the line between "this conversation forks a lot", which is normal
+    // and not worth a warning, and "we recovered a sliver of the graph", which
+    // means the export is damaged in a way the user needs to see.
+    if recovered * 2 < total {
+        warnings.push(BranchWarning::PartialRecovery { recovered, total });
+    }
+
     branch.warnings = warnings;
     Ok(branch)
 }
@@ -336,94 +368,154 @@ fn carries_a_message(conversation: &Conversation, node_ids: &[String]) -> bool {
         .any(|node| node.has_message())
 }
 
-/// Breadth-first search over `children` returning the deepest node found.
-///
-/// Seeded from [`Conversation::roots`] first (sorted, so the traversal is
-/// stable) and then from every still-unvisited node in sorted order, which is
-/// what makes nodes trapped in a cycle — and therefore reachable from no root
-/// at all — still eligible. The visited set means each node and edge is
-/// examined once, so the whole search is O(V + E).
-///
-/// Ties are resolved by depth, then by the number of messages on the path used
-/// to reach the node, then by the smallest id.
-fn deepest_reachable(conversation: &Conversation) -> Option<&str> {
-    #[derive(Clone, Copy)]
-    struct Reached {
-        depth: usize,
-        messages: usize,
-    }
+/// What a node's `parent` chain looks like: how many nodes
+/// [`walk_to_root`] would collect starting there, and how many carry a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Chain {
+    length: usize,
+    messages: usize,
+}
 
-    let mut seen: HashMap<&str, Reached> = HashMap::with_capacity(conversation.mapping.len());
-    let mut queue: VecDeque<&str> = VecDeque::new();
+/// The node whose `parent` chain is longest — the leaf the fallback should
+/// render from.
+///
+/// **This must measure along `parent`, not `children`.** `parent` and
+/// `children` are independent fields in the export and routinely disagree:
+/// truncated exports ship a complete `parent` chain with every `children` list
+/// empty, which is precisely the shape this fallback exists to serve. Measuring
+/// on `children` and then reconstructing with [`walk_to_root`] (which follows
+/// `parent`) scored every node at depth 0 in that case and silently rendered a
+/// single message out of eight. Measure with the edge you reconstruct with.
+///
+/// Using `parent` also removes route ambiguity for free. `children` is
+/// multi-valued, so a node reachable by two routes got whichever depth the
+/// breadth-first search found *first* — the shortest — which let a diamond
+/// exclude the real leaf. `parent` is `Option<String>`: exactly one edge out of
+/// each node, so a node's chain length is a property of the node itself and
+/// there is no shorter or longer route to disagree about.
+///
+/// Cost is O(V). Each node's chain is computed once and memoized; a walk stops
+/// as soon as it reaches a node whose chain is already known, so the total work
+/// is bounded by the number of nodes rather than the sum of the chain lengths.
+///
+/// Ties are resolved by message count and then by smallest id, so the result is
+/// stable across runs despite `HashMap` ordering.
+fn longest_parent_chain(conversation: &Conversation) -> Option<&str> {
+    let chains = parent_chains(conversation);
 
     let mut sorted_ids: Vec<&str> = conversation.mapping.keys().map(String::as_str).collect();
     sorted_ids.sort_unstable();
 
-    let seeds = conversation.roots().into_iter().chain(sorted_ids);
-
-    let mut best: Option<(&str, Reached)> = None;
-
-    for seed in seeds {
-        let Some(node) = conversation.node(seed) else {
+    let mut best: Option<(&str, Chain)> = None;
+    for id in sorted_ids {
+        let Some(&chain) = chains.get(id) else {
             continue;
         };
-        if seen.contains_key(seed) {
-            continue;
-        }
-        let reached = Reached {
-            depth: 0,
-            messages: usize::from(node.has_message()),
+        let is_better = match best {
+            None => true,
+            // `sorted_ids` ascends, so a strict improvement is the only way to
+            // displace the incumbent; that makes the smallest id win ties.
+            Some((_, incumbent)) => {
+                (chain.length, chain.messages) > (incumbent.length, incumbent.messages)
+            }
         };
-        seen.insert(seed, reached);
-        queue.push_back(seed);
-        best = better(best, (seed, reached));
-
-        while let Some(id) = queue.pop_front() {
-            let (Some(node), Some(here)) = (conversation.node(id), seen.get(id).copied()) else {
-                continue;
-            };
-            for child in &node.children {
-                let child = child.as_str();
-                let Some(child_node) = conversation.node(child) else {
-                    // `children` may name ids the export never included.
-                    continue;
-                };
-                if seen.contains_key(child) {
-                    continue;
-                }
-                let reached = Reached {
-                    depth: here.depth + 1,
-                    messages: here.messages + usize::from(child_node.has_message()),
-                };
-                seen.insert(child, reached);
-                queue.push_back(child);
-                best = better(best, (child, reached));
-            }
-        }
-    }
-
-    /// Deterministic winner: deepest, then most messages, then smallest id.
-    fn better<'a>(
-        current: Option<(&'a str, Reached)>,
-        candidate: (&'a str, Reached),
-    ) -> Option<(&'a str, Reached)> {
-        match current {
-            None => Some(candidate),
-            Some(existing) => {
-                let existing_key = (existing.1.depth, existing.1.messages);
-                let candidate_key = (candidate.1.depth, candidate.1.messages);
-                if candidate_key > existing_key
-                    || (candidate_key == existing_key && candidate.0 < existing.0)
-                {
-                    Some(candidate)
-                } else {
-                    Some(existing)
-                }
-            }
+        if is_better {
+            best = Some((id, chain));
         }
     }
 
     best.map(|(id, _)| id)
+}
+
+/// Chain length and message count for every node, measured along `parent`.
+///
+/// Iterative and memoized. The `parent` relation is a functional graph — one
+/// edge out of every node — so each walk ends in exactly one of four ways: a
+/// node with no parent, a parent missing from the mapping, a node whose chain
+/// is already known, or a node already on the walk (a cycle).
+///
+/// The cycle case is the only subtle one. [`walk_to_root`] entering a cycle
+/// collects every distinct node in it and then stops, so every node *on* a
+/// cycle has the same chain — the cycle itself — and a node hanging off a cycle
+/// has its tail plus the whole cycle. Assigning the cycle's own length to each
+/// of its members makes the ordinary `1 + parent` rule produce exactly that for
+/// the tail nodes below it.
+fn parent_chains(conversation: &Conversation) -> HashMap<&str, Chain> {
+    let mut known: HashMap<&str, Chain> = HashMap::with_capacity(conversation.mapping.len());
+    let mut sorted_ids: Vec<&str> = conversation.mapping.keys().map(String::as_str).collect();
+    sorted_ids.sort_unstable();
+
+    let mut path: Vec<&str> = Vec::new();
+    let mut position: HashMap<&str, usize> = HashMap::new();
+
+    for start in sorted_ids {
+        if known.contains_key(start) {
+            continue;
+        }
+        path.clear();
+        position.clear();
+
+        // Metrics of the node just above the walk: zero when the walk ended at
+        // a root or a broken parent, the memoized chain when it met a known
+        // node, the cycle's own chain when it met itself.
+        let mut above = Chain {
+            length: 0,
+            messages: 0,
+        };
+        let mut cycle_at = None;
+        let mut cursor = Some(start);
+
+        while let Some(id) = cursor {
+            if let Some(&chain) = known.get(id) {
+                above = chain;
+                break;
+            }
+            if let Some(&index) = position.get(id) {
+                cycle_at = Some(index);
+                break;
+            }
+            let Some(node) = conversation.node(id) else {
+                // Unreachable: every id walked comes from the mapping.
+                break;
+            };
+            position.insert(id, path.len());
+            path.push(id);
+            cursor = match node.parent.as_deref() {
+                Some(parent) if conversation.node(parent).is_some() => Some(parent),
+                // No parent, or a parent the export never included: either way
+                // this node is an effective root and the chain ends here.
+                _ => None,
+            };
+        }
+
+        if let Some(index) = cycle_at {
+            let cycle = Chain {
+                length: path.len() - index,
+                messages: path[index..]
+                    .iter()
+                    .filter(|id| conversation.node(id).is_some_and(|n| n.has_message()))
+                    .count(),
+            };
+            for &id in &path[index..] {
+                known.insert(id, cycle);
+            }
+            above = cycle;
+            path.truncate(index);
+        }
+
+        // Unwind from the topmost node down to `start`, each one adding itself
+        // to whatever sits above it.
+        for &id in path.iter().rev() {
+            above = Chain {
+                length: above.length + 1,
+                messages: above.messages
+                    + usize::from(conversation.node(id).is_some_and(|n| n.has_message())),
+            };
+            known.insert(id, above);
+        }
+    }
+
+    known
 }
 
 #[cfg(test)]
@@ -775,6 +867,145 @@ mod tests {
         );
     }
 
+    /// Regression: a truncated export ships a complete `parent` chain with
+    /// every `children` list empty. Measuring depth on `children` scored every
+    /// node at 0 and rendered 1 message out of 8.
+    #[test]
+    fn intact_parent_chain_with_empty_children_recovers_every_message() {
+        let mut nodes: Vec<NodeSpec<'_>> = vec![("root", None, vec![], None)];
+        let ids: Vec<String> = (1..=8).map(|i| format!("n{i}")).collect();
+        let parents: Vec<String> = std::iter::once("root".to_string())
+            .chain(ids.iter().take(7).cloned())
+            .collect();
+        for (index, id) in ids.iter().enumerate() {
+            nodes.push((
+                id.as_str(),
+                Some(parents[index].as_str()),
+                // Deliberately empty: this is what a truncated export looks like.
+                vec![],
+                user(&format!("message number {} content here", index + 1)),
+            ));
+        }
+        let conversation = conversation(None, nodes);
+
+        let branch = active_branch(&conversation).expect("resolves");
+        assert_eq!(branch.strategy, "longest-path");
+        assert_eq!(
+            branch.node_ids,
+            ["root", "n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8"]
+        );
+        assert_eq!(branch.messages(&conversation).len(), 8);
+        // Full recovery, so no partial-recovery warning.
+        assert!(
+            !branch
+                .warnings
+                .iter()
+                .any(|w| matches!(w, BranchWarning::PartialRecovery { .. }))
+        );
+    }
+
+    /// Regression: `root.children` also names `e`, which is really the leaf of
+    /// `root -> a -> b -> c -> d -> e`. A breadth-first search over `children`
+    /// fixed `e` at depth 1 and dropped the final message.
+    #[test]
+    fn diamond_children_shortcut_does_not_truncate_the_branch() {
+        let conversation = conversation(
+            None,
+            vec![
+                ("root", None, vec!["a", "e"], None),
+                ("a", Some("root"), vec!["b"], user("one")),
+                ("b", Some("a"), vec!["c"], assistant("two")),
+                ("c", Some("b"), vec!["d"], user("three")),
+                ("d", Some("c"), vec!["e"], assistant("four")),
+                (
+                    "e",
+                    Some("d"),
+                    vec![],
+                    user("FINAL MESSAGE that must appear"),
+                ),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        assert_eq!(branch.node_ids, ["root", "a", "b", "c", "d", "e"]);
+        assert!(
+            texts(&branch, &conversation)
+                .iter()
+                .any(|t| t.contains("FINAL MESSAGE")),
+            "the deepest message-carrying leaf must be on the branch"
+        );
+    }
+
+    /// The chain length of a node hanging off a cycle is its tail plus the
+    /// whole cycle, which is exactly what `walk_to_root` collects from it.
+    #[test]
+    fn chain_length_of_a_tail_below_a_cycle_includes_the_whole_cycle() {
+        let conversation = conversation(
+            None,
+            vec![
+                ("a", Some("c"), vec![], user("a")),
+                ("b", Some("a"), vec![], user("b")),
+                ("c", Some("b"), vec![], user("c")),
+                ("tail", Some("a"), vec![], user("tail")),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        // walk_to_root from `tail`: tail, a, c, b — then b's parent `a` is
+        // already visited, so the walk stops. Four nodes, the deepest chain.
+        assert_eq!(branch.len(), 4);
+        assert_eq!(branch.node_ids.last().map(String::as_str), Some("tail"));
+    }
+
+    /// A guess that recovers a sliver of the graph has to say so.
+    #[test]
+    fn a_fallback_that_recovers_little_warns_about_it() {
+        // Six message nodes, each its own root: the best chain holds one.
+        let nodes: Vec<NodeSpec<'_>> = ["a", "b", "c", "d", "e", "f"]
+            .into_iter()
+            .map(|id| (id, None, vec![], user("stranded")))
+            .collect();
+        let conversation = conversation(None, nodes);
+
+        let branch = active_branch(&conversation).expect("resolves");
+        assert_eq!(branch.messages(&conversation).len(), 1);
+        assert!(branch.warnings.contains(&BranchWarning::PartialRecovery {
+            recovered: 1,
+            total: 6
+        }));
+        let rendered = branch
+            .warnings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rendered.contains("1 of 6"));
+    }
+
+    /// A conversation that merely forks is not "partial recovery" — the warning
+    /// must not cry wolf on healthy exports.
+    #[test]
+    fn an_ordinary_fork_does_not_warn_about_partial_recovery() {
+        let conversation = conversation(
+            None,
+            vec![
+                ("root", None, vec!["u1"], None),
+                ("u1", Some("root"), vec!["gen1", "gen2"], user("q")),
+                ("gen1", Some("u1"), vec![], assistant("first")),
+                ("gen2", Some("u1"), vec![], assistant("second")),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        assert_eq!(branch.messages(&conversation).len(), 2);
+        assert!(
+            !branch
+                .warnings
+                .iter()
+                .any(|w| matches!(w, BranchWarning::PartialRecovery { .. }))
+        );
+    }
+
     #[test]
     fn longest_path_ties_break_deterministically() {
         // Two equally deep, equally message-rich leaves: `alpha` must win.
@@ -870,6 +1101,10 @@ mod tests {
             BranchWarning::CycleDetected { node: "n".into() },
             BranchWarning::FellBackToLongestPath,
             BranchWarning::NoMessagesOnBranch,
+            BranchWarning::PartialRecovery {
+                recovered: 1,
+                total: 8,
+            },
         ];
         for warning in warnings {
             let rendered = warning.to_string();

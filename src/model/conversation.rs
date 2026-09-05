@@ -20,12 +20,44 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    /// Title with control characters and bidi overrides removed, falling back
-    /// to a placeholder. Always safe to print.
+    /// Title, made safe to print: control characters and bidi overrides
+    /// removed, all whitespace collapsed to single spaces, with a placeholder
+    /// when there is no usable title.
+    ///
+    /// Whitespace collapsing is a security measure, not cosmetics. A title is
+    /// attacker-supplied, and an embedded newline in a table cell fabricates a
+    /// whole extra row of output — a conversation that never existed, with an
+    /// id and date of the attacker's choosing. A title is a single-line field,
+    /// so flattening it costs nothing and closes that hole.
     pub fn display_title(&self) -> String {
         match self.title.as_deref().map(str::trim) {
-            Some(title) if !title.is_empty() => text::sanitize_display(title).into_owned(),
+            Some(title) if !title.is_empty() => {
+                let flattened = text::collapse_whitespace(title);
+                let safe = text::sanitize_display(&flattened);
+                if safe.trim().is_empty() {
+                    "(untitled)".to_string()
+                } else {
+                    safe.into_owned()
+                }
+            }
             _ => "(untitled)".to_string(),
+        }
+    }
+
+    /// Conversation id, made safe to print.
+    ///
+    /// Ids are every bit as attacker-controlled as titles — they are just
+    /// strings in the export — so they get the same treatment. Use this
+    /// anywhere an id reaches a terminal or a generated document; use the raw
+    /// [`Conversation::id`] for lookups, comparisons, and JSON payloads, where
+    /// fidelity matters and no terminal interprets the bytes.
+    pub fn display_id(&self) -> String {
+        let flattened = text::collapse_whitespace(&self.id);
+        let safe = text::sanitize_display(&flattened);
+        if safe.trim().is_empty() {
+            "(unnamed)".to_string()
+        } else {
+            safe.into_owned()
         }
     }
 
@@ -166,6 +198,28 @@ mod tests {
         assert_eq!(raw(json!({})).display_title(), "(untitled)");
         let hostile = raw(json!({"title": "ok\u{202e}evil"}));
         assert!(!hostile.display_title().contains('\u{202e}'));
+    }
+
+    #[test]
+    fn display_fields_cannot_fabricate_extra_output_rows() {
+        let escape = char::from_u32(27).unwrap_or('?');
+        let hostile = raw(json!({
+            "id": format!("id{escape}[31mRED\nFAKE-ROW  1999-01-01  Injected"),
+            "title": "benign\nFAKE-ROW  1999-01-01  Injected via title",
+        }));
+        for rendered in [hostile.display_title(), hostile.display_id()] {
+            assert!(!rendered.contains('\n'), "newline survived: {rendered:?}");
+            assert!(!rendered.contains(escape), "escape survived: {rendered:?}");
+        }
+        // The raw id is preserved for lookups and JSON.
+        assert!(hostile.id.contains('\n'));
+    }
+
+    #[test]
+    fn display_fields_fall_back_when_sanitizing_empties_them() {
+        let only_controls = raw(json!({"id": "\u{202e}\u{202d}", "title": "\u{202e}"}));
+        assert_eq!(only_controls.display_id(), "(unnamed)");
+        assert_eq!(only_controls.display_title(), "(untitled)");
     }
 
     #[test]

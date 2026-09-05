@@ -110,7 +110,9 @@ fn render_document(
     out.push_str(&title);
     out.push_str("\n\n");
     out.push_str("Conversation ID: ");
-    out.push_str(&conversation.id);
+    // Sanitized: transcript.md is read with `cat` as often as in an editor,
+    // and an id is attacker-supplied text like any other export field.
+    out.push_str(&conversation.display_id());
     out.push('\n');
     out.push_str("Created: ");
     out.push_str(&created);

@@ -348,7 +348,7 @@ fn choose<'a>(
             let listed: Vec<AmbiguousCandidate> = candidates
                 .iter()
                 .map(|candidate| AmbiguousCandidate {
-                    id: candidate.conversation.id.clone(),
+                    id: candidate.conversation.display_id(),
                     title: candidate.conversation.display_title(),
                     score: candidate.score,
                 })
@@ -477,7 +477,7 @@ fn cmd_list(args: &ListArgs, options: &LoadOptions, tz: TimeZoneMode) -> Result<
     for conversation in &conversations {
         println!(
             "{:<36}  {:<16}  {}",
-            conversation.id,
+            conversation.display_id(),
             timefmt::format_short(conversation.update_time, tz),
             conversation.display_title()
         );
@@ -520,7 +520,7 @@ fn cmd_find(args: &FindArgs, options: &LoadOptions) -> Result<()> {
         println!(
             "{:>3}  {}  {}",
             found.score,
-            short_id(&found.conversation.id),
+            short_id(&found.conversation.display_id()),
             found.conversation.display_title()
         );
         if let Some(excerpt) = &found.excerpt {
@@ -566,7 +566,7 @@ fn cmd_show(args: &ShowArgs, options: &LoadOptions, tz: TimeZoneMode) -> Result<
     }
 
     println!("Title:                  {}", conversation.display_title());
-    println!("Conversation ID:        {}", conversation.id);
+    println!("Conversation ID:        {}", conversation.display_id());
     println!(
         "Created:                {}",
         timefmt::format(conversation.create_time, tz)
@@ -815,7 +815,7 @@ fn cmd_inspect(args: &InspectArgs, options: &LoadOptions) -> Result<()> {
         return Ok(());
     }
 
-    println!("Conversation ID: {}", conversation.id);
+    println!("Conversation ID: {}", conversation.display_id());
     println!("Title:           {}", conversation.display_title());
     println!(
         "current_node:    {}",

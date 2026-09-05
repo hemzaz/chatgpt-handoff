@@ -1,0 +1,76 @@
+[
+  {
+    "id": "inject-id-0001\u001b[31m\nFAKE-ROW  1999-01-01  Fabricated via id",
+    "title": "Hostile id",
+    "create_time": 1700000000.0,
+    "update_time": 1700000001.0,
+    "current_node": "n1",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "n1"
+        ]
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "root",
+        "children": [],
+        "message": {
+          "id": "m1",
+          "author": {
+            "role": "user",
+            "name": null
+          },
+          "create_time": 1700000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "A single harmless message."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "inject-title-0002",
+    "title": "Hostile title\nFAKE-ROW  1999-01-01  Fabricated via title",
+    "create_time": 1700000000.0,
+    "update_time": 1700000002.0,
+    "current_node": "n1",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "n1"
+        ]
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "root",
+        "children": [],
+        "message": {
+          "id": "m1",
+          "author": {
+            "role": "user",
+            "name": null
+          },
+          "create_time": 1700000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "A single harmless message."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  }
+]

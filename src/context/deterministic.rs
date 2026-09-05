@@ -175,39 +175,70 @@ const CONCLUSION_CUES: &[&str] = &[
     "כלומר",
 ];
 
-/// Cues strong enough, on their own, to mark a sentence as a rejected or
-/// superseded approach.
-///
-/// "instead of" and "rather than" deliberately live in [`CONTRAST_CUES`]
-/// instead: on their own they are far more often a *preference* ("tell me
-/// instead of guessing") than a record of an approach that was actually
-/// dropped.
-const REJECTION_CUES: &[&str] = &[
+// Rejection cues are split by tense, because tense is what separates a record
+// from a guess. Both sets are strong enough on their own for an ordinary
+// sentence; they differ only in how they survive a conditional opener (see
+// [`is_rejection`]).
+//
+// "instead of" and "rather than" are in neither set — they live in
+// [`CONTRAST_CUES`], because on their own they are far more often a
+// *preference* ("tell me instead of guessing") than a record of an approach
+// that was actually dropped.
+
+/// Past-tense rejection cues: the sentence *reports* something that already
+/// happened, so it stays a record even under a conditional opener.
+const REJECTION_PAST_CUES: &[&str] = &[
     // English
-    "won't",
-    "will not",
-    "don't use",
-    "do not use",
-    "no longer",
-    "we dropped",
-    "abandoned",
-    "doesn't work",
-    "does not work",
     "didn't work",
     "did not work",
+    "we dropped",
+    "abandoned",
     "deprecated",
     "ruled out",
     "rejected",
     "scrapped",
     "backed out",
     "gave up on",
+    "no longer",
     // Hebrew
-    "לא נשתמש",
-    "לא עובד",
+    "לא עבד",
     "ויתרנו",
     "נזנח",
     "נדחה",
     "בוטל",
+];
+
+/// Modal or future rejection cues: the sentence *predicts* or *instructs*
+/// rather than reports. Under a conditional opener these describe a situation
+/// that may never arise, so they are suppressed there.
+const REJECTION_MODAL_CUES: &[&str] = &[
+    // English
+    "won't",
+    "will not",
+    "wouldn't work",
+    "would not work",
+    "doesn't work",
+    "does not work",
+    "don't use",
+    "do not use",
+    // Hebrew
+    "לא נשתמש",
+    "לא עובד",
+];
+
+/// Past-tense narrative markers that are *not* rejections on their own — "we
+/// tried it and it was great" rejects nothing — but do prove that a
+/// conditional sentence is recounting an attempt rather than imagining one.
+const PAST_NARRATIVE_CUES: &[&str] = &[
+    // English
+    "we tried",
+    "tried",
+    "we attempted",
+    "attempted",
+    // Hebrew
+    "ניסינו",
+    "עברנו",
+    "השתמשנו",
 ];
 
 /// Contrast cues that mark a rejection only when paired with a
@@ -253,14 +284,9 @@ const REJECTION_SUPPORT_CUES: &[&str] = &[
     "סוכם",
 ];
 
-/// Sentence openers that make the rest of the sentence hypothetical. A
-/// conditional describes a situation that may arise, not a path the
-/// conversation actually abandoned.
-///
-/// The trade-off is deliberate: this also drops the occasional real record
-/// ("When we tried the queue it didn't work"). A false positive in
-/// "Rejected / Superseded Approaches" actively misleads the reading model into
-/// avoiding something nobody rejected, so the heuristic errs toward silence.
+/// Sentence openers that make the rest of the sentence hypothetical unless it
+/// also reports something that actually happened. See [`is_rejection`] for how
+/// that exception is decided.
 const CONDITIONAL_OPENERS: &[&str] = &[
     "if ",
     "when ",
@@ -933,17 +959,34 @@ fn rejections_section(messages: &[BranchMessage<'_>], already_claimed: &[String]
 
 /// Whether a sentence records a rejected or superseded approach.
 ///
-/// A bare contrast ("instead of") is not enough: it needs a past-tense or
-/// decision signal alongside it. Hypothetical sentences are excluded outright.
+/// Three tiers, in order of how much evidence they carry:
+///
+/// 1. A past-tense cue ([`REJECTION_PAST_CUES`]) — the strongest signal, since
+///    the sentence reports an outcome.
+/// 2. A modal cue ([`REJECTION_MODAL_CUES`]) — strong for an ordinary
+///    sentence, but only a prediction.
+/// 3. A contrast cue ([`CONTRAST_CUES`]) paired with a decision signal
+///    ([`REJECTION_SUPPORT_CUES`]) — a bare "instead of" is not enough.
+///
+/// A conditional opener ([`CONDITIONAL_OPENERS`]) changes what those mean. The
+/// discriminator is tense, not the conditional itself: "when we tried the queue
+/// it didn't work" recounts a real attempt, while "if we use the queue it won't
+/// work" predicts one that never happened. So under a conditional the sentence
+/// must also *report* — via a past-tense rejection cue or a
+/// [`PAST_NARRATIVE_CUES`] marker — and the weak contrast tier, which is too
+/// thin to survive a conditional either way, is dropped entirely.
 fn is_rejection(sentence: &str) -> bool {
     let folded = fold(sentence);
+    let past = contains_any(&folded, REJECTION_PAST_CUES);
+    let modal = contains_any(&folded, REJECTION_MODAL_CUES);
+
     if CONDITIONAL_OPENERS
         .iter()
         .any(|opener| folded.starts_with(opener))
     {
-        return false;
+        return (past || modal) && (past || contains_any(&folded, PAST_NARRATIVE_CUES));
     }
-    if contains_any(&folded, REJECTION_CUES) {
+    if past || modal {
         return true;
     }
     contains_any(&folded, CONTRAST_CUES) && contains_any(&folded, REJECTION_SUPPORT_CUES)
@@ -1926,6 +1969,75 @@ mod tests {
         assert!(is_rejection("That approach no longer works for us."));
         assert!(!is_rejection("If it fails, retry instead of aborting."));
         assert!(!is_rejection("When it fails, log instead of aborting."));
+    }
+
+    // A matched pair: both sentences open with a conditional and both carry a
+    // strong rejection cue. Only the tense of that cue separates a record of a
+    // real attempt from a prediction about one that never happened.
+
+    #[test]
+    fn a_conditional_with_a_past_tense_cue_is_a_rejected_approach() {
+        let sentence = "When we tried the queue it didn't work, so we moved to polling.";
+        assert!(is_rejection(sentence));
+
+        let messages = script(&[
+            (Role::User, "How did the queue go?"),
+            (Role::Assistant, sentence),
+            (Role::User, "Thanks."),
+        ]);
+        let rejected = body_of(&document_for(&messages), "Rejected / Superseded Approaches");
+        assert!(
+            rejected.contains("it didn't work"),
+            "a recounted attempt was dropped: {rejected}"
+        );
+    }
+
+    #[test]
+    fn a_conditional_with_only_a_modal_cue_is_not_a_rejected_approach() {
+        let sentence = "If we use the queue it won't work at this scale.";
+        assert!(!is_rejection(sentence));
+
+        let messages = script(&[
+            (Role::User, "What about a queue?"),
+            (Role::Assistant, sentence),
+            (Role::User, "Thanks."),
+        ]);
+        let rejected = body_of(&document_for(&messages), "Rejected / Superseded Approaches");
+        assert!(
+            !rejected.contains("won't work at this scale"),
+            "a prediction was filed as a rejected approach: {rejected}"
+        );
+    }
+
+    #[test]
+    fn the_past_versus_modal_distinction_holds_in_hebrew() {
+        // "When we tried the queue it didn't work, so we moved to polling."
+        assert!(is_rejection(
+            "כשניסינו את התור זה לא עבד, אז עברנו לפולינג."
+        ));
+        // "If we use the queue it won't work at this scale."
+        assert!(!is_rejection("אם נשתמש בתור זה לא יעבוד בקנה מידה כזה."));
+    }
+
+    #[test]
+    fn a_conditional_opener_no_longer_suppresses_on_its_own() {
+        // Past-tense strong cues survive a conditional...
+        assert!(is_rejection(
+            "When we abandoned the cron approach, throughput doubled."
+        ));
+        assert!(is_rejection(
+            "If we had known, we would have ruled out the queue sooner."
+        ));
+        // ...while modal-only ones do not.
+        assert!(!is_rejection("If it fails, don't use the queue."));
+        assert!(!is_rejection(
+            "Unless the load drops, that approach doesn't work."
+        ));
+        // Non-conditional behaviour is unchanged: modal cues still count.
+        assert!(is_rejection("That approach won't work for us."));
+        assert!(is_rejection(
+            "The old parser doesn't work on nested exports."
+        ));
     }
 
     #[test]

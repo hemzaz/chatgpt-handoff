@@ -662,6 +662,54 @@ fn hostile_titles_are_stripped_of_terminal_control_sequences() {
     assert!(!text.contains('\u{1b}'), "ANSI escape must be stripped");
 }
 
+/// Titles *and* ids are attacker-supplied. Neither may emit a terminal escape
+/// or fabricate an extra row of output via an embedded newline.
+#[test]
+fn hostile_ids_and_titles_cannot_forge_table_rows() {
+    let output = cli()
+        .args(["list"])
+        .arg(fixture("injection-export.json"))
+        .output()
+        .expect("run");
+    assert!(output.status.success());
+
+    let text = stdout_of(&output);
+    assert!(!text.contains('\u{1b}'), "ANSI escape reached stdout");
+
+    // Exactly one data row per conversation. An embedded newline in either
+    // the id or the title would produce a third, with a date and title of
+    // the attacker's choosing.
+    let data_rows = text
+        .lines()
+        .filter(|line| line.starts_with("inject-"))
+        .count();
+    assert_eq!(data_rows, 2, "expected exactly 2 data rows, got:\n{text}");
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.trim_start().starts_with("FAKE-ROW")),
+        "a forged row reached stdout:\n{text}"
+    );
+
+    // The transcript header is equally exposed: it is read with `cat`.
+    let transcript = cli()
+        .args(["transcript"])
+        .arg(fixture("injection-export.json"))
+        .args(["--conversation", "inject-title-0002"])
+        .output()
+        .expect("run");
+    let body = stdout_of(&transcript);
+    assert!(!body.contains('\u{1b}'));
+    let heading = body.lines().next().unwrap_or_default();
+    assert!(heading.starts_with("# "), "{heading:?}");
+    assert!(
+        !body
+            .lines()
+            .any(|line| line.trim_start().starts_with("FAKE-ROW")),
+        "a forged line reached transcript.md:\n{body}"
+    );
+}
+
 #[test]
 fn a_missing_input_file_fails_cleanly() {
     cli()
