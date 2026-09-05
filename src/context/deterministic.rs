@@ -175,11 +175,15 @@ const CONCLUSION_CUES: &[&str] = &[
     "כלומר",
 ];
 
-/// Cues for "Rejected / Superseded Approaches".
+/// Cues strong enough, on their own, to mark a sentence as a rejected or
+/// superseded approach.
+///
+/// "instead of" and "rather than" deliberately live in [`CONTRAST_CUES`]
+/// instead: on their own they are far more often a *preference* ("tell me
+/// instead of guessing") than a record of an approach that was actually
+/// dropped.
 const REJECTION_CUES: &[&str] = &[
     // English
-    "instead of",
-    "rather than",
     "won't",
     "will not",
     "don't use",
@@ -193,12 +197,83 @@ const REJECTION_CUES: &[&str] = &[
     "did not work",
     "deprecated",
     "ruled out",
+    "rejected",
+    "scrapped",
+    "backed out",
+    "gave up on",
     // Hebrew
-    "במקום",
     "לא נשתמש",
     "לא עובד",
     "ויתרנו",
     "נזנח",
+    "נדחה",
+    "בוטל",
+];
+
+/// Contrast cues that mark a rejection only when paired with a
+/// [`REJECTION_SUPPORT_CUES`] signal in the same sentence.
+const CONTRAST_CUES: &[&str] = &["instead of", "rather than", "במקום"];
+
+/// Past-tense or decision signals. Paired with a contrast cue these turn
+/// "instead of X, Y" from a stated preference into a record of a path taken
+/// and a path abandoned.
+const REJECTION_SUPPORT_CUES: &[&str] = &[
+    // English
+    "we decided",
+    "decided",
+    "we went with",
+    "we're using",
+    "we are using",
+    "we'll use",
+    "we will use",
+    "let's use",
+    "going with",
+    "switched",
+    "moved to",
+    "replaced",
+    "we chose",
+    "chose",
+    "ended up",
+    "we used",
+    "originally",
+    "previously",
+    "at first",
+    "used to",
+    // Hebrew
+    "החלטנו",
+    "עברנו",
+    "בחרנו",
+    "השתמשנו",
+    "נעשה",
+    "נשתמש",
+    "נלך",
+    "במקור",
+    "בהתחלה",
+    "הוחלט",
+    "סוכם",
+];
+
+/// Sentence openers that make the rest of the sentence hypothetical. A
+/// conditional describes a situation that may arise, not a path the
+/// conversation actually abandoned.
+///
+/// The trade-off is deliberate: this also drops the occasional real record
+/// ("When we tried the queue it didn't work"). A false positive in
+/// "Rejected / Superseded Approaches" actively misleads the reading model into
+/// avoiding something nobody rejected, so the heuristic errs toward silence.
+const CONDITIONAL_OPENERS: &[&str] = &[
+    "if ",
+    "when ",
+    "whenever ",
+    "unless ",
+    "in case ",
+    "should you",
+    "suppose ",
+    "אם ",
+    "כאשר ",
+    "כש",
+    "במידה ",
+    "אילו ",
 ];
 
 /// Tokens too common to be terminology. Short tokens (under
@@ -528,17 +603,17 @@ pub(crate) fn build_document(
         background_section(messages, selection),
     );
     document.set_section("Established Facts", facts_section(messages));
-    document.set_section(
-        "User Preferences and Constraints",
-        preferences_section(messages),
-    );
+    // Preferences are computed once: the rejection heuristic needs them so the
+    // same sentence cannot be filed under two contradictory headings.
+    let preferences = preference_items(messages);
+    document.set_section("User Preferences and Constraints", bullets(&preferences));
     document.set_section("Decisions Already Made", decisions_section(messages));
     document.set_section("Terminology and Entities", terminology_section(messages));
     document.set_section("Important Technical Details", technical_section(messages));
     document.set_section("Key Conclusions", conclusions_section(messages));
     document.set_section(
         "Rejected / Superseded Approaches",
-        rejections_section(messages),
+        rejections_section(messages, &preferences),
     );
     document.set_section("Current State", current_state_section(messages));
     document.set_section("Open Questions", open_questions_section(messages));
@@ -698,8 +773,8 @@ fn facts_section(messages: &[BranchMessage<'_>]) -> String {
 }
 
 /// User sentences carrying an explicit preference or constraint cue.
-fn preferences_section(messages: &[BranchMessage<'_>]) -> String {
-    cue_bullets(
+fn preference_items(messages: &[BranchMessage<'_>]) -> Vec<String> {
+    cue_items(
         messages,
         |role| *role == Role::User,
         PREFERENCE_CUES,
@@ -836,9 +911,42 @@ fn conclusions_section(messages: &[BranchMessage<'_>]) -> String {
     ))
 }
 
-/// Sentences that abandon or argue against an approach, from either side.
-fn rejections_section(messages: &[BranchMessage<'_>]) -> String {
-    cue_bullets(messages, |_| true, REJECTION_CUES, MAX_SHORT_BULLETS)
+/// Sentences recording an approach that was actually dropped, from either side.
+///
+/// `already_claimed` holds the bullets already filed under "User Preferences
+/// and Constraints"; a sentence never appears in both, because a stated
+/// preference and an abandoned approach are contradictory readings of the same
+/// line and the reading model would have no way to tell which was meant.
+fn rejections_section(messages: &[BranchMessage<'_>], already_claimed: &[String]) -> String {
+    let claimed: BTreeSet<String> = already_claimed
+        .iter()
+        .map(|item| fold(item.as_str()))
+        .collect();
+    let candidates = role_sentences(messages, |_| true)
+        .into_iter()
+        .filter(|(_, sentence)| !sentence.contains('?'))
+        .filter(|(_, sentence)| is_rejection(sentence))
+        .map(|(_, sentence)| clipped(&sentence, SENTENCE_CHARS))
+        .filter(|sentence| !claimed.contains(&fold(sentence)));
+    bullets(&dedup_capped(candidates, MAX_SHORT_BULLETS))
+}
+
+/// Whether a sentence records a rejected or superseded approach.
+///
+/// A bare contrast ("instead of") is not enough: it needs a past-tense or
+/// decision signal alongside it. Hypothetical sentences are excluded outright.
+fn is_rejection(sentence: &str) -> bool {
+    let folded = fold(sentence);
+    if CONDITIONAL_OPENERS
+        .iter()
+        .any(|opener| folded.starts_with(opener))
+    {
+        return false;
+    }
+    if contains_any(&folded, REJECTION_CUES) {
+        return true;
+    }
+    contains_any(&folded, CONTRAST_CUES) && contains_any(&folded, REJECTION_SUPPORT_CUES)
 }
 
 /// One line per message for the last handful of turns — where the
@@ -893,12 +1001,77 @@ fn recent_section(selection: &RecentSelection, total: usize, recent_markdown: &s
          Unlike every section above, this is the conversation itself, not an extraction._",
         selection.message_count, total, selection.characters
     );
-    let body = recent_markdown.trim();
+    let demoted = demote_headings(recent_markdown);
+    let body = demoted.trim();
     if body.is_empty() {
         header
     } else {
         format!("{header}\n\n{body}")
     }
+}
+
+/// Push every ATX heading in the rendered tail down to level 3 so the tail
+/// nests inside `## Recent Conversation`.
+///
+/// [`crate::transcript::render_messages`] emits `## User` / `## Assistant`,
+/// which is right for a standalone `transcript.md` but wrong once embedded: an
+/// `##` heading inside an `##` section *terminates* that section for anything
+/// reading the document as a tree, and this document's entire audience reads it
+/// as a tree. Levels 1 and 2 both become level 3; level 3 and deeper are
+/// already nested and are left alone. The transcript renderer is not changed —
+/// its own output is correct for its own file.
+///
+/// Headings inside fenced code blocks are message *content*, not structure, and
+/// are never rewritten: a conversation about Markdown routinely quotes a
+/// literal `## User` line inside a fence.
+fn demote_headings(markdown: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut open_fence: Option<(char, usize)> = None;
+
+    for line in markdown.lines() {
+        let marker = fence_marker(line);
+        match open_fence {
+            Some((open_char, open_len)) => {
+                // Only a bare, matching, long-enough fence closes the block.
+                if let Some((fence_char, fence_len, bare)) = marker {
+                    if bare && fence_char == open_char && fence_len >= open_len {
+                        open_fence = None;
+                    }
+                }
+                lines.push(line.to_string());
+            }
+            None => match marker {
+                Some((fence_char, fence_len, _)) => {
+                    open_fence = Some((fence_char, fence_len));
+                    lines.push(line.to_string());
+                }
+                None => lines.push(demote_heading_line(line)),
+            },
+        }
+    }
+    lines.join("\n")
+}
+
+/// `(fence character, run length, nothing follows the run)` for a fence line.
+fn fence_marker(line: &str) -> Option<(char, usize, bool)> {
+    let trimmed = line.trim_start();
+    let fence_char = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let run = trimmed.chars().take_while(|c| *c == fence_char).count();
+    if run < 3 {
+        return None;
+    }
+    let rest = trimmed.get(run..).unwrap_or("");
+    Some((fence_char, run, rest.trim().is_empty()))
+}
+
+/// `# h` and `## h` become `### h`; anything else is returned unchanged.
+fn demote_heading_line(line: &str) -> String {
+    for prefix in ["## ", "# "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return format!("### {rest}");
+        }
+    }
+    line.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +1110,16 @@ fn cue_bullets(
     cues: &[&str],
     cap: usize,
 ) -> String {
+    bullets(&cue_items(messages, role_pred, cues, cap))
+}
+
+/// The deduplicated sentence list behind [`cue_bullets`].
+fn cue_items(
+    messages: &[BranchMessage<'_>],
+    role_pred: impl Fn(&Role) -> bool,
+    cues: &[&str],
+    cap: usize,
+) -> Vec<String> {
     let candidates = role_sentences(messages, role_pred)
         .into_iter()
         // A question is never a stated preference, decision or rejection, even
@@ -944,7 +1127,7 @@ fn cue_bullets(
         .filter(|(_, sentence)| !sentence.contains('?'))
         .filter(|(_, sentence)| contains_any(&fold(sentence), cues))
         .map(|(_, sentence)| clipped(&sentence, SENTENCE_CHARS));
-    bullets(&dedup_capped(candidates, cap))
+    dedup_capped(candidates, cap)
 }
 
 /// Question sentences of a message body, sanitized and collapsed.
@@ -1001,8 +1184,12 @@ fn frequent_terms(messages: &[BranchMessage<'_>]) -> Vec<String> {
             .then(right.2.cmp(&left.2))
             .then(left.0.cmp(&right.0))
     });
-    ranked.truncate(MAX_FREQUENT_TERMS);
-    ranked.into_iter().map(|(token, _, _)| token).collect()
+    // Dedupe after ranking so a plural variant cannot occupy a slot its
+    // higher-ranked singular already holds.
+    dedup_capped_terms(
+        ranked.into_iter().map(|(token, _, _)| token),
+        MAX_FREQUENT_TERMS,
+    )
 }
 
 /// Whether a folded token can be terminology: long enough, not a stopword, not
@@ -1064,7 +1251,7 @@ fn capitalized_runs(messages: &[BranchMessage<'_>]) -> Vec<String> {
             }
         }
     }
-    dedup_capped_exact(found, MAX_MARKED_TERMS)
+    dedup_capped_terms(found, MAX_MARKED_TERMS)
 }
 
 fn is_capitalized(word: &str) -> bool {
@@ -1110,27 +1297,32 @@ fn looks_like_version(token: &str) -> bool {
     body.split('.').filter(|part| !part.is_empty()).count() >= 2
 }
 
-/// Strip surrounding punctuation and markup a token picked out of prose.
+/// Strip surrounding punctuation and markup from a token picked out of prose.
+///
+/// A trailing `.` is stripped too: at the end of a token it is sentence
+/// punctuation far more often than part of the token. *Leading* dots are
+/// preserved, so `./src` and `.env` survive, and a real extension survives too
+/// — `src/export/json.rs.` trims to `src/export/json.rs`, not `src/export/json`.
+/// Stripping happens before deduplication so `Rust CLIs.` and `Rust CLI` do not
+/// both reach the output.
 fn trim_token(token: &str) -> &str {
-    token.trim_matches(|c: char| {
-        matches!(
-            c,
-            '`' | '"'
-                | '\''
-                | '('
-                | ')'
-                | '['
-                | ']'
-                | '{'
-                | '}'
-                | ','
-                | ';'
-                | ':'
-                | '!'
-                | '?'
-                | '*'
-        )
-    })
+    let mut current = token;
+    loop {
+        let trimmed = current
+            .trim_matches(is_boundary_punctuation)
+            .trim_end_matches(['.', '…']);
+        if trimmed.len() == current.len() {
+            return trimmed;
+        }
+        current = trimmed;
+    }
+}
+
+fn is_boundary_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':' | '!' | '?' | '*'
+    )
 }
 
 /// Evenly spaced indices into `len` items, at most `cap` of them.
@@ -1175,6 +1367,30 @@ fn contains_any(folded: &str, cues: &[&str]) -> bool {
 /// of each entry and stopping at `cap`.
 fn dedup_capped(candidates: impl IntoIterator<Item = String>, cap: usize) -> Vec<String> {
     dedup_with(candidates, cap, fold)
+}
+
+/// As [`dedup_capped`] but folding a single English plural on the final word,
+/// so `Rust CLI` and `Rust CLIs` are one entity rather than two.
+fn dedup_capped_terms(candidates: impl IntoIterator<Item = String>, cap: usize) -> Vec<String> {
+    dedup_with(candidates, cap, term_key)
+}
+
+/// Dedupe key for terminology and entity names: case-folded, with one trailing
+/// `s` removed from the last word when at least three graphemes remain (so
+/// `bus` stays `bus`). Hebrew is unaffected — it has no `s` plural.
+fn term_key(value: &str) -> String {
+    let folded = fold(value);
+    match folded.rsplit_once(' ') {
+        Some((head, last)) => format!("{head} {}", singular(last)),
+        None => singular(&folded),
+    }
+}
+
+fn singular(word: &str) -> String {
+    match word.strip_suffix('s') {
+        Some(stem) if text::grapheme_count(stem) >= 3 => stem.to_string(),
+        _ => word.to_string(),
+    }
 }
 
 /// As [`dedup_capped`] but case-*sensitive*, for identifiers where `Foo` and
@@ -1649,6 +1865,93 @@ mod tests {
     }
 
     #[test]
+    fn trailing_sentence_punctuation_is_stripped_from_extracted_paths() {
+        let messages = script(&[
+            (
+                Role::User,
+                "The loader lives in src/export/json.rs. The branch code is src/graph/branch.rs.",
+            ),
+            (Role::Assistant, "Understood."),
+        ]);
+        let body = body_of(&document_for(&messages), "Important Technical Details");
+        assert!(body.contains("src/export/json.rs"), "{body}");
+        assert!(body.contains("src/graph/branch.rs"), "{body}");
+        // The real extension survives; the full stop does not.
+        assert!(!body.contains("json.rs."), "{body}");
+        assert!(!body.contains("branch.rs."), "{body}");
+        assert!(!body.contains("src/export/json,"), "{body}");
+    }
+
+    #[test]
+    fn punctuated_and_plural_entity_variants_collapse_to_one_entry() {
+        let messages = script(&[
+            (Role::User, "I am building a Rust CLI."),
+            (Role::Assistant, "Most Rust CLIs. use clap for arguments."),
+            (Role::User, "Right, a Rust CLI is what I want."),
+            (Role::Assistant, "The Rust CLI will ship next week."),
+        ]);
+        let body = body_of(&document_for(&messages), "Terminology and Entities");
+        assert!(body.contains("Rust CLI"), "{body}");
+        assert!(!body.contains("CLIs."), "{body}");
+        // "Rust CLI" and "Rust CLIs" are one entity, listed once.
+        let entities = body
+            .lines()
+            .find(|line| line.starts_with("- **Named entities:**"))
+            .unwrap_or_default();
+        assert_eq!(entities.matches("Rust CLI").count(), 1, "{entities}");
+    }
+
+    #[test]
+    fn a_conditional_instead_of_sentence_is_not_a_rejected_approach() {
+        let messages = script(&[
+            (
+                Role::User,
+                "If an export is malformed, tell me about it instead of quietly guessing.",
+            ),
+            (Role::Assistant, "Understood."),
+            (Role::User, "Thanks."),
+        ]);
+        let document = document_for(&messages);
+        let rejected = body_of(&document, "Rejected / Superseded Approaches");
+        assert!(
+            !rejected.contains("instead of quietly guessing"),
+            "a hypothetical preference was filed as a rejected approach: {rejected}"
+        );
+    }
+
+    #[test]
+    fn a_bare_contrast_needs_a_decision_signal_to_count_as_a_rejection() {
+        assert!(!is_rejection("Tell me instead of guessing."));
+        assert!(is_rejection("Instead of the cron we decided on a queue."));
+        assert!(is_rejection("That approach no longer works for us."));
+        assert!(!is_rejection("If it fails, retry instead of aborting."));
+        assert!(!is_rejection("When it fails, log instead of aborting."));
+    }
+
+    #[test]
+    fn a_sentence_is_never_both_a_preference_and_a_rejected_approach() {
+        let messages = script(&[
+            (
+                Role::User,
+                "We must use Parquet instead of CSV, we decided that already.",
+            ),
+            (Role::Assistant, "Understood."),
+            (Role::User, "Thanks."),
+        ]);
+        let document = document_for(&messages);
+        let preferences = body_of(&document, "User Preferences and Constraints");
+        let rejected = body_of(&document, "Rejected / Superseded Approaches");
+        assert!(
+            preferences.contains("Parquet instead of CSV"),
+            "{preferences}"
+        );
+        assert!(
+            !rejected.contains("Parquet instead of CSV"),
+            "the same line was filed under two contradictory headings: {rejected}"
+        );
+    }
+
+    #[test]
     fn current_state_summarises_the_last_turns() {
         let messages = english();
         let body = body_of(&document_for(&messages), "Current State");
@@ -1687,6 +1990,66 @@ mod tests {
         let body = body_of(&document, "Recent Conversation");
         assert!(body.contains("the last 3 of 7 message(s)"));
         assert!(body.contains("verbatim tail"));
+    }
+
+    #[test]
+    fn nested_transcript_headings_are_demoted_to_keep_the_section_intact() {
+        let messages = english();
+        let entries = branch(&messages);
+        let selection = select_recent(&entries, 2, None);
+        let document = build_document(
+            &conversation(),
+            &entries,
+            &selection,
+            "## User\n\nfirst\n\n## Assistant\n\nsecond\n",
+            &ContextOptions::default(),
+        );
+        let body = body_of(&document, "Recent Conversation");
+        assert!(body.contains("### User"), "{body}");
+        assert!(body.contains("### Assistant"), "{body}");
+        // No level-1 or level-2 heading may survive inside the section, or the
+        // section ends early for anything reading the document as a tree.
+        for line in body.lines() {
+            assert!(
+                !line.starts_with("# ") && !line.starts_with("## "),
+                "heading escapes Recent Conversation: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn headings_inside_fenced_message_content_are_not_demoted() {
+        let messages = english();
+        let entries = branch(&messages);
+        let selection = select_recent(&entries, 2, None);
+        let tail = "## User\n\nHere is the markdown I mean:\n\n                    ```markdown\n## User\n# Heading\n```\n\n## Assistant\n\nGot it\n";
+        let document = build_document(
+            &conversation(),
+            &entries,
+            &selection,
+            tail,
+            &ContextOptions::default(),
+        );
+        let body = body_of(&document, "Recent Conversation");
+        // The two role headings were demoted...
+        assert_eq!(body.matches("### User").count(), 1, "{body}");
+        assert!(body.contains("### Assistant"), "{body}");
+        // ...but the fenced content is message text and stays byte-identical.
+        assert!(
+            body.contains("```markdown\n## User\n# Heading\n```"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn heading_demotion_survives_long_and_tilde_fences() {
+        let input =
+            "## User\n\n````\n## Not a heading\n````\n\n~~~\n# Also not\n~~~\n\n## Assistant";
+        let out = demote_headings(input);
+        assert!(out.starts_with("### User"));
+        assert!(out.contains("\n## Not a heading\n"));
+        assert!(out.contains("\n# Also not\n"));
+        assert!(out.ends_with("### Assistant"));
     }
 
     #[test]
