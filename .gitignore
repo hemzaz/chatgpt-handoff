@@ -1,0 +1,14 @@
+/target
+
+# Rust
+**/*.rs.bk
+*.pdb
+
+# Default extraction output directory for `extract`/`prompt` runs.
+/handoff/
+
+# Guard against accidentally committing a personal ChatGPT export: real
+# exports arrive as a .zip and typically get unzipped to conversations.json
+# in the repo root while poking at the tool.
+*.zip
+/conversations.json

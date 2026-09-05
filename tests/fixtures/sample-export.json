@@ -1,0 +1,336 @@
+[
+  {
+    "id": "conv-linear-0001",
+    "title": "Rust CLI design notes",
+    "create_time": 1755000000.123456,
+    "update_time": 1755003600.654321,
+    "current_node": "node-08-assistant",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-01-user"]
+      },
+      "node-01-user": {
+        "id": "node-01-user",
+        "message": {
+          "id": "msg-01",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755000000.123456,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "I'm building a Rust CLI to parse ChatGPT exports. The export loading lives at src/export/json.rs. What crate should we use for argument parsing?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": ["node-02-assistant"]
+      },
+      "node-02-assistant": {
+        "id": "node-02-assistant",
+        "message": {
+          "id": "msg-02",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755000060.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "clap is the standard choice for Rust CLIs. Derive-based usage looks like:\n\n```rust\nuse clap::Parser;\n\n#[derive(Parser)]\nstruct Cli {\n    #[arg(long)]\n    conversation: Option<String>,\n}\n```\n\nIt gives you `--help`, subcommands, and typed parsing for free."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-01-user",
+        "children": ["node-03-user"]
+      },
+      "node-03-user": {
+        "id": "node-03-user",
+        "message": {
+          "id": "msg-03",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755000300.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Sounds good. We decided to use clap for argument parsing. Also see https://docs.rs/clap for the full derive reference."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-02-assistant",
+        "children": ["node-04-assistant"]
+      },
+      "node-04-assistant": {
+        "id": "node-04-assistant",
+        "message": {
+          "id": "msg-04",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755000360.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Great, I'll wire that up. Anything on error handling philosophy before I start?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-03-user",
+        "children": ["node-05-user"]
+      },
+      "node-05-user": {
+        "id": "node-05-user",
+        "message": {
+          "id": "msg-05",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755000600.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "I prefer errors over silent fallbacks. If an export is malformed, tell me about it instead of quietly guessing."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-04-assistant",
+        "children": ["node-06-assistant"]
+      },
+      "node-06-assistant": {
+        "id": "node-06-assistant",
+        "message": {
+          "id": "msg-06",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755000660.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Understood. I'll surface warnings for recoverable damage — a broken parent link, a dangling current_node — and reserve hard errors for cases where no branch can be produced at all."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-05-user",
+        "children": ["node-07-user"]
+      },
+      "node-07-user": {
+        "id": "node-07-user",
+        "message": {
+          "id": "msg-07",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755003000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "What about the file at src/graph/branch.rs — does it already implement branch reconstruction?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-06-assistant",
+        "children": ["node-08-assistant"]
+      },
+      "node-08-assistant": {
+        "id": "node-08-assistant",
+        "message": {
+          "id": "msg-08",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755003600.654321,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Yes, src/graph/branch.rs walks up from current_node with a longest-path fallback for damaged exports. Open question: should we expose a way to pick a different strategy explicitly, or keep it fully automatic for now?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-07-user",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-branch-0002",
+    "title": "Regenerated answer demo",
+    "create_time": 1755100000.0,
+    "update_time": 1755100900.0,
+    "current_node": "node-04-assistant-kept",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-01-user"]
+      },
+      "node-01-user": {
+        "id": "node-01-user",
+        "message": {
+          "id": "msg-b01",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755100000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Summarize the tradeoffs between HashMap and BTreeMap for a small conversation mapping."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": ["node-02-assistant-abandoned", "node-03-assistant-kept"]
+      },
+      "node-02-assistant-abandoned": {
+        "id": "node-02-assistant-abandoned",
+        "message": {
+          "id": "msg-b02",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755100120.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "FIRST REGENERATION (abandoned): BTreeMap is always faster for small maps because of cache locality."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-01-user",
+        "children": []
+      },
+      "node-03-assistant-kept": {
+        "id": "node-03-assistant-kept",
+        "message": {
+          "id": "msg-b03",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755100240.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "SECOND REGENERATION (kept): HashMap gives O(1) average lookup and is the right default here; BTreeMap only wins if you need sorted iteration, which this mapping does not."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-01-user",
+        "children": ["node-04-user-kept"]
+      },
+      "node-04-user-kept": {
+        "id": "node-04-user-kept",
+        "message": {
+          "id": "msg-b04",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755100500.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Good, HashMap it is. Follow-up: do we need deterministic iteration order anywhere?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-03-assistant-kept",
+        "children": ["node-04-assistant-kept"]
+      },
+      "node-04-assistant-kept": {
+        "id": "node-04-assistant-kept",
+        "message": {
+          "id": "msg-b05",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755100900.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Only for user-facing output like `roots()` — sort those results explicitly at the call site rather than relying on map order."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-04-user-kept",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-hebrew-0003",
+    "title": "איבוגה גמילה מאופיאטים",
+    "create_time": 1755200000.0,
+    "update_time": 1755200800.0,
+    "current_node": "node-04-assistant",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-01-user"]
+      },
+      "node-01-user": {
+        "id": "node-01-user",
+        "message": {
+          "id": "msg-h01",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755200000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "שמעתי שאיבוגה נחקר בהקשר של גמילה מאופיאטים. זה נכון?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": ["node-02-assistant"]
+      },
+      "node-02-assistant": {
+        "id": "node-02-assistant",
+        "message": {
+          "id": "msg-h02",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755200200.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "כן, זהו נושא שנחקר במחקר אקדמי, אך מדובר בחומר בסיכון גבוה שאינו מאושר לשימוש רפואי ברוב המדינות. זה אינו ייעוץ רפואי."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-01-user",
+        "children": ["node-03-user"]
+      },
+      "node-03-user": {
+        "id": "node-03-user",
+        "message": {
+          "id": "msg-h03",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755200500.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "מעניין. איפה אפשר לקרוא מחקרים אקדמיים בנושא?"
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-02-assistant",
+        "children": ["node-04-assistant"]
+      },
+      "node-04-assistant": {
+        "id": "node-04-assistant",
+        "message": {
+          "id": "msg-h04",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755200800.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "אפשר לחפש מאמרים בכתבי עת רפואיים מבוקרי עמיתים דרך PubMed, אך תמיד כדאי להתייעץ עם רופא מוסמך לפני כל החלטה."
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-03-user",
+        "children": []
+      }
+    }
+  }
+]

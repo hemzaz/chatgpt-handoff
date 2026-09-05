@@ -1,0 +1,212 @@
+[
+  {
+    "id": "conv-malformed-current-node",
+    "title": "Dangling current_node",
+    "create_time": 1755300000.0,
+    "update_time": 1755300100.0,
+    "current_node": "node-does-not-exist",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-01-user"]
+      },
+      "node-01-user": {
+        "id": "node-01-user",
+        "message": {
+          "id": "msg-m01",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755300000.0,
+          "content": { "content_type": "text", "parts": ["Is this export still usable?"] },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": ["node-02-assistant"]
+      },
+      "node-02-assistant": {
+        "id": "node-02-assistant",
+        "message": {
+          "id": "msg-m02",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755300100.0,
+          "content": { "content_type": "text", "parts": ["Yes — this is the longest-path fallback in action."] },
+          "metadata": {}
+        },
+        "parent": "node-01-user",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-malformed-broken-parent",
+    "title": "Broken parent link",
+    "create_time": 1755300200.0,
+    "update_time": 1755300300.0,
+    "current_node": "node-b-leaf",
+    "mapping": {
+      "node-b-mid": {
+        "id": "node-b-mid",
+        "message": {
+          "id": "msg-m03",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755300200.0,
+          "content": { "content_type": "text", "parts": ["This node's parent id was never included in the export."] },
+          "metadata": {}
+        },
+        "parent": "node-ghost-parent",
+        "children": ["node-b-leaf"]
+      },
+      "node-b-leaf": {
+        "id": "node-b-leaf",
+        "message": {
+          "id": "msg-m04",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755300300.0,
+          "content": { "content_type": "text", "parts": ["Treated the mid node as an effective root and kept going."] },
+          "metadata": {}
+        },
+        "parent": "node-b-mid",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-malformed-cycle",
+    "title": "Two-node parent cycle",
+    "create_time": 1755300400.0,
+    "update_time": 1755300500.0,
+    "current_node": "node-cycle-x",
+    "mapping": {
+      "node-cycle-x": {
+        "id": "node-cycle-x",
+        "message": {
+          "id": "msg-m05",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755300400.0,
+          "content": { "content_type": "text", "parts": ["x claims y as its parent."] },
+          "metadata": {}
+        },
+        "parent": "node-cycle-y",
+        "children": ["node-cycle-y"]
+      },
+      "node-cycle-y": {
+        "id": "node-cycle-y",
+        "message": {
+          "id": "msg-m06",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755300500.0,
+          "content": { "content_type": "text", "parts": ["y claims x as its parent, closing the loop."] },
+          "metadata": {}
+        },
+        "parent": "node-cycle-x",
+        "children": ["node-cycle-x"]
+      }
+    }
+  },
+  {
+    "id": "conv-malformed-future-content-type",
+    "title": "Unknown content_type from a future ChatGPT release",
+    "create_time": 1755300600.0,
+    "update_time": 1755300700.0,
+    "current_node": "node-future-assistant",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-future-user"]
+      },
+      "node-future-user": {
+        "id": "node-future-user",
+        "message": {
+          "id": "msg-m07",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755300600.0,
+          "content": { "content_type": "text", "parts": ["What did the new response type look like?"] },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": ["node-future-assistant"]
+      },
+      "node-future-assistant": {
+        "id": "node-future-assistant",
+        "message": {
+          "id": "msg-m08",
+          "author": { "role": "assistant", "name": null },
+          "create_time": 1755300700.0,
+          "content": {
+            "content_type": "future_thing_2027",
+            "text": "A holographic response segment the current schema does not model yet."
+          },
+          "metadata": {}
+        },
+        "parent": "node-future-user",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-malformed-multimodal-image",
+    "title": "Multimodal message with an image attachment",
+    "create_time": 1755300800.0,
+    "update_time": 1755300900.0,
+    "current_node": "node-image-user",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-image-user"]
+      },
+      "node-image-user": {
+        "id": "node-image-user",
+        "message": {
+          "id": "msg-m09",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755300800.0,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "Here's a screenshot of the error:",
+              {
+                "content_type": "image_asset_pointer",
+                "asset_pointer": "file-service://synthetic-fixture-asset-0001"
+              }
+            ]
+          },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": []
+      }
+    }
+  },
+  {
+    "id": "conv-malformed-hostile-title",
+    "title": "Report‮ evil.exe\u001b[2J",
+    "create_time": 1755301000.0,
+    "update_time": 1755301100.0,
+    "current_node": "node-hostile-user",
+    "mapping": {
+      "node-00-root": {
+        "id": "node-00-root",
+        "message": null,
+        "parent": null,
+        "children": ["node-hostile-user"]
+      },
+      "node-hostile-user": {
+        "id": "node-hostile-user",
+        "message": {
+          "id": "msg-m10",
+          "author": { "role": "user", "name": null },
+          "create_time": 1755301000.0,
+          "content": { "content_type": "text", "parts": ["This conversation title tries to spoof the terminal."] },
+          "metadata": {}
+        },
+        "parent": "node-00-root",
+        "children": []
+      }
+    }
+  }
+]

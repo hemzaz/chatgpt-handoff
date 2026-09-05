@@ -1,0 +1,49 @@
+{
+  "conversations": [
+    {
+      "id": "conv-wrapped-0001",
+      "title": "Wrapped export shape check",
+      "create_time": 1755400000.0,
+      "update_time": 1755400200.0,
+      "current_node": "node-02-assistant",
+      "mapping": {
+        "node-00-root": {
+          "id": "node-00-root",
+          "message": null,
+          "parent": null,
+          "children": ["node-01-user"]
+        },
+        "node-01-user": {
+          "id": "node-01-user",
+          "message": {
+            "id": "msg-w01",
+            "author": { "role": "user", "name": null },
+            "create_time": 1755400000.0,
+            "content": {
+              "content_type": "text",
+              "parts": ["Does this tool accept the {\"conversations\": [...]} wrapped shape too?"]
+            },
+            "metadata": {}
+          },
+          "parent": "node-00-root",
+          "children": ["node-02-assistant"]
+        },
+        "node-02-assistant": {
+          "id": "node-02-assistant",
+          "message": {
+            "id": "msg-w02",
+            "author": { "role": "assistant", "name": null },
+            "create_time": 1755400200.0,
+            "content": {
+              "content_type": "text",
+              "parts": ["Yes — a bare array and an object with a top-level `conversations` array are both accepted."]
+            },
+            "metadata": {}
+          },
+          "parent": "node-01-user",
+          "children": []
+        }
+      }
+    }
+  ]
+}
