@@ -6,7 +6,9 @@
 //! ever cuts at message boundaries — a half-message tail would be worse than a
 //! shorter whole one.
 
-use crate::graph::BranchMessage;
+use super::ContextOptions;
+use crate::graph::{BranchMessage, ConversationBranch};
+use crate::model::Conversation;
 use crate::text;
 
 /// Where the verbatim tail starts and how big it is.
@@ -81,6 +83,56 @@ pub fn select_recent(
         message_count: count,
         characters,
     }
+}
+
+/// The messages a handoff document is built from: the active branch, filtered
+/// by [`crate::transcript::TranscriptOptions::includes`].
+///
+/// This is the single definition of "which messages count". Every consumer —
+/// the heuristics, the verbatim tail, the summarization prompt, and the
+/// caller-facing [`recent_selection`] — goes through it, so a message can
+/// never be counted in one place and dropped in another.
+pub fn visible_messages<'a>(
+    conversation: &'a Conversation,
+    branch: &'a ConversationBranch,
+    options: &ContextOptions,
+) -> Vec<BranchMessage<'a>> {
+    branch
+        .messages(conversation)
+        .into_iter()
+        .filter(|entry| options.transcript.includes(entry.message))
+        .collect()
+}
+
+/// The tail [`crate::context::ContextGenerator::generate`] will actually
+/// preserve, computed over the same filtered list the document uses.
+///
+/// Callers that report "N messages preserved" to a user or to `metadata.json`
+/// must use this rather than running [`select_recent`] over an unfiltered
+/// branch: hidden and empty-content nodes are common in real exports, and
+/// counting them would both overstate N and spend part of a `recent_chars`
+/// budget on text that is then excluded.
+pub fn recent_selection(
+    conversation: &Conversation,
+    branch: &ConversationBranch,
+    options: &ContextOptions,
+) -> RecentSelection {
+    resolve_recent(conversation, branch, options).1
+}
+
+/// [`visible_messages`] and the tail selected from it, in one traversal.
+///
+/// `generate` needs both halves; [`recent_selection`] needs only the second.
+/// Both go through here so the number a caller prints is by construction the
+/// number the document contains.
+pub(crate) fn resolve_recent<'a>(
+    conversation: &'a Conversation,
+    branch: &'a ConversationBranch,
+    options: &ContextOptions,
+) -> (Vec<BranchMessage<'a>>, RecentSelection) {
+    let visible = visible_messages(conversation, branch, options);
+    let selection = select_recent(&visible, options.recent_messages, options.recent_chars);
+    (visible, selection)
 }
 
 /// Synthetic [`crate::model::Message`] fixtures shared by the `context` tests.

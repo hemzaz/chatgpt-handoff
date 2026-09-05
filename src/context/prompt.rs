@@ -16,7 +16,8 @@
 //! not call itself.
 
 use super::{
-    ContextDocument, ContextGenerator, ContextOptions, DeterministicContextGenerator, SECTION_ORDER,
+    ContextDocument, ContextGenerator, ContextOptions, DeterministicContextGenerator,
+    SECTION_ORDER, visible_messages,
 };
 use crate::error::Result;
 use crate::graph::{BranchMessage, ConversationBranch};
@@ -104,11 +105,7 @@ pub fn summarization_prompt(
     branch: &ConversationBranch,
     options: &ContextOptions,
 ) -> String {
-    let messages: Vec<BranchMessage<'_>> = branch
-        .messages(conversation)
-        .into_iter()
-        .filter(|entry| options.transcript.includes(entry.message))
-        .collect();
+    let messages = visible_messages(conversation, branch, options);
     build_prompt(
         conversation,
         &PromptStats::from_messages(&messages),

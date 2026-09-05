@@ -58,7 +58,7 @@ pub fn open(path: &Path, options: &LoadOptions) -> Result<Box<dyn ExportSource>>
     if looks_like_zip(path) {
         Ok(Box::new(ZipSource::new(path, *options)))
     } else {
-        Ok(Box::new(JsonSource::new(path)))
+        Ok(Box::new(JsonSource::with_options(path, *options)))
     }
 }
 
@@ -224,6 +224,112 @@ mod tests {
         )
         .expect_err("missing path must fail");
         assert!(matches!(error, Error::Io { .. }));
+    }
+
+    /// The fixture deliberately contains a duplicate id — the case that used
+    /// to make the two paths disagree.
+    const DUPLICATE_FIXTURE: &str = r#"[
+        {"id": "dup", "title": "old", "update_time": 100.0},
+        {"id": "solo", "title": "only me", "update_time": 50.0},
+        {"id": "dup", "title": "new", "update_time": 200.0}
+    ]"#;
+
+    #[test]
+    fn loose_json_and_zipped_json_agree_on_the_same_bytes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let loose = dir.path().join("conversations.json");
+        std::fs::write(&loose, DUPLICATE_FIXTURE).expect("write fixture");
+        let zipped = dir.path().join("export.zip");
+        std::fs::write(
+            &zipped,
+            write_zip_bytes(&[("conversations.json", DUPLICATE_FIXTURE)]),
+        )
+        .expect("write fixture");
+
+        let from_json = load(&loose, &LoadOptions::default()).expect("json loads");
+        let from_zip = load(&zipped, &LoadOptions::default()).expect("zip loads");
+
+        assert_eq!(from_json.len(), 2, "the duplicate id must collapse");
+        assert_eq!(
+            from_json.len(),
+            from_zip.len(),
+            "both paths must see the same number of conversations"
+        );
+
+        let ids = |set: &ConversationSet| -> Vec<String> {
+            set.conversations.iter().map(|c| c.id.clone()).collect()
+        };
+        let titles = |set: &ConversationSet| -> Vec<String> {
+            set.conversations
+                .iter()
+                .map(|c| c.display_title())
+                .collect()
+        };
+        assert_eq!(ids(&from_json), ids(&from_zip), "same ids, same order");
+        assert_eq!(
+            titles(&from_json),
+            titles(&from_zip),
+            "and the same copy of the duplicate survived in both"
+        );
+        assert_eq!(titles(&from_json), vec!["new", "only me"]);
+
+        // Both must say so, rather than quietly dropping a conversation.
+        for set in [&from_json, &from_zip] {
+            assert!(
+                set.warnings
+                    .iter()
+                    .any(|w| w.contains("collapsed 1 duplicate")),
+                "{:?}",
+                set.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn raw_lookup_agrees_across_both_paths_for_a_duplicated_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loose = dir.path().join("conversations.json");
+        std::fs::write(&loose, DUPLICATE_FIXTURE).expect("write fixture");
+        let zipped = dir.path().join("export.zip");
+        std::fs::write(
+            &zipped,
+            write_zip_bytes(&[("conversations.json", DUPLICATE_FIXTURE)]),
+        )
+        .expect("write fixture");
+
+        let options = LoadOptions::default();
+        let from_json = raw_conversation(&loose, &options, "dup").expect("lookup");
+        let from_zip = raw_conversation(&zipped, &options, "dup").expect("lookup");
+        assert_eq!(from_json, from_zip);
+        assert_eq!(
+            from_json.as_ref().and_then(|v| v["title"].as_str()),
+            Some("new"),
+            "the raw lookup must pick the same copy `load` kept"
+        );
+    }
+
+    #[test]
+    fn the_size_limit_applies_to_loose_json_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = format!(r#"[{{"id": "a", "title": "{}"}}]"#, "x".repeat(4096));
+
+        let loose = dir.path().join("conversations.json");
+        std::fs::write(&loose, &body).expect("write fixture");
+        let zipped = dir.path().join("export.zip");
+        std::fs::write(&zipped, write_zip_bytes(&[("conversations.json", &body)]))
+            .expect("write fixture");
+
+        let tight = LoadOptions {
+            max_unpacked_bytes: 64,
+        };
+        for path in [&loose, &zipped] {
+            assert!(
+                matches!(load(path, &tight), Err(Error::ArchiveEntryTooLarge { .. })),
+                "{} must respect --max-unpacked-bytes",
+                path.display()
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,11 @@
 //! input into a directory the user cares about:
 //!
 //! 1. **Never clobber by default.** Existing targets are detected *before* any
-//!    write happens, so a refused run leaves the directory untouched.
+//!    write happens, so a refused run leaves the directory untouched. This is
+//!    a check-then-write, not an atomic claim: a file created by another
+//!    process in the window between the check and the rename is overwritten.
+//!    That race is not worth a lockfile for a single-user CLI, but it is a
+//!    real gap and is stated here rather than papered over.
 //! 2. **Atomic.** Each file is written to a temporary file in the destination
 //!    directory and then renamed into place, so a crash or a full disk can
 //!    never leave a half-written `context.md` behind.
@@ -39,8 +43,21 @@ impl Writer {
 
     /// Queue a file. `name` is reduced to a single safe path component, so a
     /// caller can never escape the output directory.
+    ///
+    /// Staging the same sanitized name twice replaces the earlier entry rather
+    /// than writing one path twice and reporting it twice. Two distinct names
+    /// can sanitize to one component, so this is not reachable only through
+    /// caller error.
     pub fn stage(&mut self, name: &str, contents: String) {
-        self.staged.push((text::sanitize_filename(name), contents));
+        let name = text::sanitize_filename(name);
+        match self
+            .staged
+            .iter_mut()
+            .find(|(existing, _)| *existing == name)
+        {
+            Some(slot) => slot.1 = contents,
+            None => self.staged.push((name, contents)),
+        }
     }
 
     /// Names staged so far, in insertion order.
@@ -192,6 +209,24 @@ mod tests {
             assert!(path.starts_with(&out), "{path:?} escaped {out:?}");
         }
         assert!(!dir.path().join("escape.md").exists());
+    }
+
+    #[test]
+    fn staging_a_colliding_name_replaces_rather_than_duplicating() {
+        let dir = temp_dir();
+        let out = dir.path().join("handoff");
+        let mut writer = Writer::new(&out, false);
+        // Two distinct names that sanitize to the same component.
+        writer.stage("a/b.md", "first".into());
+        writer.stage("a:b.md", "second".into());
+        assert_eq!(writer.staged_names().count(), 1);
+
+        let written = writer.commit().expect("write");
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&written[0]).ok(),
+            Some("second".to_string())
+        );
     }
 
     #[test]

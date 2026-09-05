@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{
-    ContextDocument, ContextGenerator, ContextOptions, RecentSelection, recent::select_recent,
+    ContextDocument, ContextGenerator, ContextOptions, RecentSelection, recent::resolve_recent,
 };
 use crate::error::Result;
 use crate::graph::{BranchMessage, ConversationBranch};
@@ -583,13 +583,10 @@ impl ContextGenerator for DeterministicContextGenerator {
         // Heuristics run over the same filtered message list the transcript
         // renderer uses, so the indices in `RecentSelection` address the same
         // messages `render_messages` will emit.
-        let visible: Vec<BranchMessage<'_>> = branch
-            .messages(conversation)
-            .into_iter()
-            .filter(|entry| options.transcript.includes(entry.message))
-            .collect();
-
-        let selection = select_recent(&visible, options.recent_messages, options.recent_chars);
+        // Going through `resolve_recent` rather than re-filtering here is what
+        // keeps a caller's reported "N messages preserved" identical to what
+        // the document actually contains.
+        let (visible, selection) = resolve_recent(conversation, branch, options);
         let range = selection.start_index..selection.start_index + selection.message_count;
         let recent_markdown =
             transcript::render_messages(conversation, branch, &options.transcript, range);
@@ -1476,9 +1473,11 @@ fn bullets(items: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::recent::fixtures::{branch, script};
+    use super::super::recent::fixtures::{branch, message, script};
     use super::*;
     use crate::context::template::{EMPTY_SECTION_BODY, SECTION_ORDER};
+    use crate::context::{recent_selection, select_recent};
+    use crate::graph::active_branch;
     use crate::model::{ConversationNode, Message};
     use std::collections::HashMap;
 
@@ -2162,6 +2161,99 @@ mod tests {
         assert!(out.contains("\n## Not a heading\n"));
         assert!(out.contains("\n# Also not\n"));
         assert!(out.ends_with("### Assistant"));
+    }
+
+    /// A real conversation graph, so a test can go through `active_branch` and
+    /// `recent_selection` exactly as `cmd_extract` does, rather than hand-building
+    /// a message slice that bypasses the filter under test.
+    fn graph_conversation(turns: &[(Role, &str, bool)]) -> Conversation {
+        let mut mapping: HashMap<String, ConversationNode> = HashMap::new();
+        for (index, (role, body, hidden)) in turns.iter().enumerate() {
+            let mut node_message = message(index, role.clone(), body);
+            node_message.metadata.is_visually_hidden_from_conversation = *hidden;
+            let id = format!("n{index}");
+            mapping.insert(
+                id.clone(),
+                ConversationNode {
+                    id,
+                    message: Some(node_message),
+                    parent: index.checked_sub(1).map(|parent| format!("n{parent}")),
+                    children: if index + 1 < turns.len() {
+                        vec![format!("n{}", index + 1)]
+                    } else {
+                        Vec::new()
+                    },
+                },
+            );
+        }
+        Conversation {
+            id: "graph-1".to_string(),
+            title: Some("Graph".to_string()),
+            create_time: Some(1_757_071_924.0),
+            update_time: Some(1_757_171_924.0),
+            current_node: Some(format!("n{}", turns.len().saturating_sub(1))),
+            mapping,
+        }
+    }
+
+    #[test]
+    fn the_reported_recent_count_equals_what_the_document_renders() {
+        // Every kind of message the filter drops, interleaved with real ones.
+        let turns: Vec<(Role, &str, bool)> = vec![
+            (Role::User, "first question about the exporter", false),
+            (Role::Assistant, "scaffolding the chatgpt ui hides", true),
+            (Role::Assistant, "a real answer about the exporter", false),
+            (Role::User, "", false),
+            (Role::System, "you are a helpful assistant", false),
+            (Role::User, "second question about the exporter", false),
+            (Role::Assistant, "second answer about the exporter", false),
+        ];
+        let conversation = graph_conversation(&turns);
+        let branch = active_branch(&conversation).expect("a linear chain resolves");
+        let options = ContextOptions {
+            recent_messages: 5,
+            ..ContextOptions::default()
+        };
+
+        let reported = recent_selection(&conversation, &branch, &options);
+        let document = DeterministicContextGenerator
+            .generate(&conversation, &branch, &options)
+            .expect("generation cannot fail");
+        let body = body_of(&document, "Recent Conversation");
+        let rendered = body.lines().filter(|line| line.starts_with("### ")).count();
+
+        // The invariant: what a caller reports is what the document contains.
+        assert_eq!(reported.message_count, rendered, "{body}");
+        assert!(body.contains(&format!("the last {} of", reported.message_count)));
+
+        // And the filter really did drop nodes, so the assertion above is not
+        // vacuously true on a branch where filtered and unfiltered coincide.
+        assert_eq!(branch.len(), 7);
+        assert_eq!(reported.message_count, 4);
+    }
+
+    #[test]
+    fn a_recent_char_budget_is_never_spent_on_excluded_messages() {
+        let bulky = "x".repeat(500);
+        let turns: Vec<(Role, &str, bool)> = vec![
+            (Role::User, "opening question about the exporter", false),
+            // Hidden, and large enough to swallow the whole budget if counted.
+            (Role::Assistant, bulky.as_str(), true),
+            (Role::User, "aaaa", false),
+            (Role::Assistant, "bbbb", false),
+        ];
+        let conversation = graph_conversation(&turns);
+        let branch = active_branch(&conversation).expect("a linear chain resolves");
+        let options = ContextOptions {
+            recent_messages: 30,
+            recent_chars: Some(20),
+            ..ContextOptions::default()
+        };
+
+        let reported = recent_selection(&conversation, &branch, &options);
+        // Counting the hidden message would have returned a single message here.
+        assert_eq!(reported.message_count, 2);
+        assert_eq!(reported.characters, 8);
     }
 
     #[test]

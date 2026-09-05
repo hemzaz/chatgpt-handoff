@@ -18,7 +18,6 @@
 //! 3. **Malformed JSON.** Delegated to [`crate::export::json`], which tolerates
 //!    per-element damage rather than failing the whole load.
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -27,13 +26,29 @@ use serde_json::Value;
 use super::{ExportSource, LoadOptions};
 use crate::error::{Error, Result};
 use crate::export::json;
-use crate::model::{Conversation, ConversationSet};
+use crate::model::ConversationSet;
 use crate::text;
 
-/// Default cap on the uncompressed size of a single archive entry (512 MiB).
+/// Default cap on the uncompressed size of a single input (512 MiB).
 ///
-/// Comfortably larger than any real ChatGPT export, small enough that a zip
-/// bomb cannot exhaust memory before we notice.
+/// Applies to an archive entry and to a loose `.json` file alike.
+///
+/// # What this actually bounds
+///
+/// **Not** peak memory, and the gap is large. Parsing goes through
+/// `Vec<serde_json::Value>`, which is far bigger than the text it came from:
+/// measured at roughly **14x** — a 34 MB `conversations.json` peaks around
+/// 490 MB resident. So this 512 MiB limit admits something on the order of
+/// **7 GB** of RSS, and on a machine with less than that a malicious (or
+/// merely enormous) export is refused by the OOM killer rather than by us.
+///
+/// The number is kept deliberately generous so that real exports load; it is
+/// a bound on *input size*, not a memory safety net. Anyone deploying this
+/// against untrusted input should lower `--max-unpacked-bytes` to roughly a
+/// fourteenth of the memory they are willing to spend.
+///
+/// Peak is higher still on the `extract --raw` path, which reads and parses
+/// the document a second time to recover fields the domain model drops.
 pub const DEFAULT_MAX_UNPACKED_BYTES: u64 = 1 << 29;
 
 /// Longest entry name we will echo back to the user, in grapheme clusters.
@@ -92,7 +107,10 @@ impl ExportSource for ZipSource {
             mut warnings,
             ..
         } = scan;
-        let mut merge = Merge::default();
+        // One `Dedupe` across every entry, so duplicates *within* a file and
+        // duplicates *across* files are collapsed by the identical rule.
+        let mut deduped = json::Dedupe::default();
+        let mut collapsed_within_files = 0usize;
 
         for (index, name) in &candidates {
             let bytes = self.read_entry(&mut archive, *index, name)?;
@@ -102,8 +120,15 @@ impl ExportSource for ZipSource {
             // worth of undecoded JSON is ever resident.
             drop(bytes);
             warnings.extend(json::skipped_warning(parsed.skipped, &origin));
-            merge.absorb(parsed.conversations);
+            collapsed_within_files = collapsed_within_files.saturating_add(parsed.collapsed);
+            deduped.absorb(parsed.conversations);
         }
+
+        let collapsed = collapsed_within_files.saturating_add(deduped.collapsed());
+        warnings.extend(json::collapsed_warning(
+            collapsed,
+            &self.path.display().to_string(),
+        ));
 
         if candidates.len() > 1 {
             let names: Vec<String> = candidates.iter().map(|(_, n)| display_name(n)).collect();
@@ -115,7 +140,7 @@ impl ExportSource for ZipSource {
         }
 
         Ok(ConversationSet {
-            conversations: merge.into_conversations(),
+            conversations: deduped.into_conversations(),
             source: self.source_label(&candidates),
             warnings,
         })
@@ -218,11 +243,8 @@ impl ZipSource {
 
         let declared = entry.size();
         if declared > limit {
-            return Err(Error::ArchiveEntryTooLarge {
-                entry: display_name(name),
-                declared,
-                limit,
-            });
+            // Case 1: the header was honest and the entry really is too big.
+            return Err(super::size_refusal(oversize_label(name), declared, limit));
         }
 
         let capacity = declared.min(MAX_PREALLOCATED_ENTRY_BYTES) as usize;
@@ -237,11 +259,14 @@ impl ZipSource {
             .map_err(|e| Error::io(&self.path, e))?;
 
         if bytes.len() as u64 > limit {
-            return Err(Error::ArchiveEntryTooLarge {
-                entry: display_name(name),
-                declared: bytes.len() as u64,
+            // Case 2: the header lied. Say so — "the entry is too big" and
+            // "the entry claimed to be small and was not" call for different
+            // responses from whoever is holding the file.
+            return Err(super::size_refusal(
+                lying_header_label(name, declared),
+                bytes.len() as u64,
                 limit,
-            });
+            ));
         }
         Ok(bytes)
     }
@@ -303,50 +328,24 @@ impl Scan {
     }
 }
 
-/// Accumulates conversations from several files, deduplicating by id.
-#[derive(Debug, Default)]
-struct Merge {
-    conversations: Vec<Conversation>,
-    by_id: HashMap<String, usize>,
+/// Label for "the header was honest and this entry is simply too big".
+fn oversize_label(name: &str) -> String {
+    display_name(name)
 }
 
-impl Merge {
-    /// Add conversations, keeping the freshest copy of any duplicate id.
-    ///
-    /// Conversations are moved, never cloned; only the id is copied, as the
-    /// index key.
-    fn absorb(&mut self, incoming: Vec<Conversation>) {
-        for conversation in incoming {
-            match self.by_id.get(&conversation.id).copied() {
-                Some(existing) => {
-                    let Some(slot) = self.conversations.get_mut(existing) else {
-                        continue;
-                    };
-                    if freshness(&conversation) > freshness(slot) {
-                        *slot = conversation;
-                    }
-                }
-                None => {
-                    self.by_id
-                        .insert(conversation.id.clone(), self.conversations.len());
-                    self.conversations.push(conversation);
-                }
-            }
-        }
-    }
-
-    fn into_conversations(self) -> Vec<Conversation> {
-        self.conversations
-    }
-}
-
-/// Sort key for "which copy of this conversation is newer".
+/// Label for "the header understated the entry and the stream ran past the
+/// limit".
 ///
-/// A missing `update_time` counts as older than any timestamp, so a dated copy
-/// always beats an undated one. `NaN` compares false against everything, which
-/// leaves the incumbent in place — deterministic, and the best available answer.
-fn freshness(conversation: &Conversation) -> f64 {
-    conversation.update_time.unwrap_or(f64::NEG_INFINITY)
+/// The two refusals share one error type, so the label is what tells them
+/// apart — and which one fired is exactly what someone holding a rejected
+/// export needs to know: an honest oversize is fixed by raising the limit, a
+/// lying header means the archive is malicious or corrupt and raising the
+/// limit is the wrong move.
+fn lying_header_label(name: &str, declared: u64) -> String {
+    format!(
+        "{} (header understated the entry: it claimed only {declared} bytes)",
+        display_name(name)
+    )
 }
 
 /// Render an entry name for human consumption.
@@ -823,6 +822,77 @@ mod tests {
     }
 
     #[test]
+    fn the_two_size_refusals_are_distinguishable() {
+        let honest = oversize_label("conversations.json");
+        let lying = lying_header_label("conversations.json", 10);
+
+        assert_eq!(honest, "conversations.json");
+        assert_ne!(
+            honest, lying,
+            "a user must be able to tell which check refused the entry"
+        );
+        assert!(lying.contains("header understated"), "{lying}");
+        assert!(lying.contains("claimed only 10 bytes"), "{lying}");
+
+        // The label is still attacker-controlled text on a terminal.
+        assert!(!lying_header_label("evil\u{202e}.json", 1).contains('\u{202e}'));
+    }
+
+    #[test]
+    fn duplicates_inside_one_archived_file_collapse_and_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_zip(
+            &dir,
+            "export.zip",
+            &[(
+                "conversations.json",
+                r#"[{"id": "dup", "title": "old", "update_time": 1.0},
+                    {"id": "dup", "title": "new", "update_time": 2.0}]"#,
+            )],
+        );
+
+        let set = load(&path, LoadOptions::default()).expect("archive loads");
+        assert_eq!(set.len(), 1);
+        assert_eq!(
+            set.find_by_id("dup").expect("dup survives").display_title(),
+            "new"
+        );
+        assert!(
+            set.warnings
+                .iter()
+                .any(|w| w.contains("collapsed 1 duplicate conversation id")),
+            "{:?}",
+            set.warnings
+        );
+    }
+
+    #[test]
+    fn collapses_are_counted_within_and_across_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_zip(
+            &dir,
+            "export.zip",
+            &[
+                (
+                    "conversations.json",
+                    r#"[{"id": "dup", "update_time": 1.0}, {"id": "dup", "update_time": 2.0}]"#,
+                ),
+                ("conversations (1).json", r#"[{"id": "dup"}]"#),
+            ],
+        );
+
+        let set = load(&path, LoadOptions::default()).expect("archive loads");
+        assert_eq!(set.len(), 1);
+        assert!(
+            set.warnings
+                .iter()
+                .any(|w| w.contains("collapsed 2 duplicate conversation ids")),
+            "one collapse within a file plus one across files: {:?}",
+            set.warnings
+        );
+    }
+
+    #[test]
     fn entry_names_are_sanitized_before_display() {
         assert!(!display_name("evil\u{202e}gnp.exe.json").contains('\u{202e}'));
         assert!(!display_name("bell\u{7}.json").contains('\u{7}'));
@@ -838,6 +908,6 @@ mod tests {
         let (Some(dated), Some(undated)) = (dated.first(), undated.first()) else {
             panic!("fixtures produce one conversation each");
         };
-        assert!(freshness(dated) > freshness(undated));
+        assert!(json::freshness(dated) > json::freshness(undated));
     }
 }

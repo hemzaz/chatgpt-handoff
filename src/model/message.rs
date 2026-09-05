@@ -44,7 +44,10 @@ impl Role {
             Role::Developer => "Developer".into(),
             Role::Tool => "Tool".into(),
             Role::Other(other) => {
-                let clean = text::sanitize_display(other);
+                // Collapse as well as sanitize: this lands in a `## ` heading,
+                // and `sanitize_display` deliberately preserves newlines.
+                let flattened = text::collapse_whitespace(other);
+                let clean = text::truncate_graphemes(&flattened, 40).into_owned();
                 let mut chars = clean.chars();
                 match chars.next() {
                     None => "Unknown".into(),
@@ -399,12 +402,32 @@ fn string_parts(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Sanitize a code-fence info string.
+///
+/// The fence-length guard below protects the *body*; the language attribute is
+/// equally untrusted and sits on the fence's own line, so a newline in it walks
+/// straight out of the block. Reduce it to a single conservative token.
+fn fence_language(language: &str) -> String {
+    let flattened = text::collapse_whitespace(language);
+    let safe = text::sanitize_display(&flattened);
+    let token: String = safe
+        .chars()
+        .take_while(|c| !c.is_whitespace())
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '+' | '#' | '.'))
+        .collect();
+    text::truncate_graphemes(&token, 24).into_owned()
+}
+
 /// Build a fenced code block whose fence is always longer than any backtick
 /// run inside the body, so untrusted content cannot break out of the fence.
 fn fenced(language: &str, body: &str) -> String {
     let longest_run = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest_run.max(2) + 1);
-    format!("{fence}{language}\n{}\n{fence}", body.trim_end())
+    format!(
+        "{fence}{}\n{}\n{fence}",
+        fence_language(language),
+        body.trim_end()
+    )
 }
 
 impl<'de> Deserialize<'de> for MessageContent {
@@ -522,6 +545,55 @@ mod tests {
     fn missing_content_type_is_empty_not_an_error() {
         assert!(MessageContent::from_value(json!({})).is_empty());
         assert!(MessageContent::from_value(Value::Null).is_empty());
+    }
+
+    #[test]
+    fn a_hostile_language_attribute_cannot_escape_the_fence() {
+        let content = MessageContent::from_value(json!({
+            "content_type": "code",
+            "language": "rust\n```\n\n## INJECTED HEADING\n\n```",
+            "text": "println!(\"x\")"
+        }));
+        let rendered = content.render_markdown();
+        assert!(!rendered.contains("## INJECTED HEADING"), "{rendered}");
+        assert!(rendered.starts_with("```rust\n"), "{rendered}");
+        assert_eq!(rendered.matches('\n').count(), 2, "{rendered}");
+    }
+
+    #[test]
+    fn fence_language_keeps_ordinary_languages_intact() {
+        for lang in [
+            "rust",
+            "c++",
+            "objective-c",
+            "f#",
+            "shell_session",
+            "Dockerfile",
+        ] {
+            assert_eq!(fence_language(lang), lang, "mangled {lang}");
+        }
+    }
+
+    #[test]
+    fn a_hostile_role_name_cannot_inject_a_heading() {
+        let role = Role::from("assistant\n\n# FAKE TRANSCRIPT HEADING");
+        let heading = role.heading();
+        // The invariant is that the name stays on one line, so it cannot start
+        // a second Markdown heading. A `#` *within* the line is inert — and
+        // stripping it would mangle legitimate role names like `c#`.
+        assert!(!heading.contains('\n'), "{heading:?}");
+        let rendered = format!("## {heading}");
+        assert_eq!(rendered.lines().count(), 1, "{rendered:?}");
+        assert!(
+            !rendered.lines().skip(1).any(|line| line.starts_with('#')),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn role_headings_stay_bounded_for_absurd_role_names() {
+        let role = Role::from(&"x".repeat(500) as &str);
+        assert!(role.heading().chars().count() <= 41, "{}", role.heading());
     }
 
     #[test]

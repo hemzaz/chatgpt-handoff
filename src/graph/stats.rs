@@ -6,11 +6,11 @@
 //! text figures describe only the branch that was actually reconstructed — the
 //! text a reader will see.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use serde::Serialize;
 
-use super::branch::ConversationBranch;
+use super::branch::{self, ConversationBranch};
 use crate::model::{Conversation, Role};
 use crate::text;
 
@@ -46,7 +46,14 @@ pub struct ConversationStats {
     pub alternative_branches: usize,
     /// Nodes whose `parent` names an id the mapping does not contain.
     pub broken_parents: usize,
-    /// Nodes not reachable from any root by following `children`.
+    /// Nodes stranded outside the branch: their `parent` chain never reaches a
+    /// genuine root, so they are attached to no beginning the conversation has.
+    ///
+    /// Measured on `parent`, the edge branches are reconstructed from, and
+    /// nodes on the returned branch are excluded — content you are being shown
+    /// is by definition not content you are missing. Damage to the branch
+    /// itself is reported by `broken_parents` and the branch warnings instead,
+    /// so nothing is hidden by that exclusion.
     pub unreachable_nodes: usize,
 }
 
@@ -93,7 +100,11 @@ impl ConversationStats {
             }
         }
 
-        stats.unreachable_nodes = stats.total_nodes - reachable_count(conversation);
+        let on_branch: HashSet<&str> = branch.node_ids.iter().map(String::as_str).collect();
+        stats.unreachable_nodes = branch::ungrounded_node_ids(conversation)
+            .into_iter()
+            .filter(|id| !on_branch.contains(id))
+            .count();
 
         for entry in branch.messages(conversation) {
             stats.active_branch_messages += 1;
@@ -112,38 +123,6 @@ impl ConversationStats {
 
         stats
     }
-}
-
-/// Number of nodes reachable from any root by following `children`.
-///
-/// Iterative and visited-guarded, so cycles and diamond-shaped `children`
-/// references cost one visit each rather than looping or exploding.
-fn reachable_count(conversation: &Conversation) -> usize {
-    let mut seen: HashSet<&str> = HashSet::with_capacity(conversation.mapping.len());
-    let mut queue: VecDeque<&str> = VecDeque::new();
-
-    for root in conversation.roots() {
-        if seen.insert(root) {
-            queue.push_back(root);
-        }
-    }
-
-    while let Some(id) = queue.pop_front() {
-        let Some(node) = conversation.node(id) else {
-            continue;
-        };
-        for child in &node.children {
-            let Some(child_node) = conversation.node(child) else {
-                // `children` may name ids the export never included.
-                continue;
-            };
-            if seen.insert(child_node.id.as_str()) {
-                queue.push_back(child_node.id.as_str());
-            }
-        }
-    }
-
-    seen.len()
 }
 
 #[cfg(test)]
@@ -241,7 +220,10 @@ mod tests {
         assert_eq!(stats.branch_points, 1);
         assert_eq!(stats.alternative_branches, 1);
         assert_eq!(stats.broken_parents, 2); // orphan + lost
-        assert_eq!(stats.unreachable_nodes, 0); // both dangling nodes are roots
+        // `orphan` and `lost` hang off ids the export never included, so neither
+        // reaches a genuine root: they really are stranded. The old
+        // children-based count called them roots and reported 0.
+        assert_eq!(stats.unreachable_nodes, 2);
         assert_eq!(stats.words, 2 + 1 + 2 + 1);
         assert_eq!(
             stats.characters,
@@ -266,6 +248,109 @@ mod tests {
         let stats = ConversationStats::compute(&conversation, &branch);
         assert_eq!(stats.total_nodes, 4);
         assert_eq!(stats.unreachable_nodes, 2);
+    }
+
+    /// Case A: intact `parent` chain, every `children` empty. The old
+    /// children-based traversal reported 8 of 9 nodes unreachable while all 9
+    /// were on the active branch — a node cannot be both.
+    #[test]
+    fn intact_parent_chain_with_empty_children_has_no_unreachable_nodes() {
+        let mut nodes: Vec<NodeSpec<'_>> = vec![("root", None, vec![], None)];
+        let ids: Vec<String> = (1..=8).map(|i| format!("n{i}")).collect();
+        let parents: Vec<String> = std::iter::once("root".to_string())
+            .chain(ids.iter().take(7).cloned())
+            .collect();
+        for (index, id) in ids.iter().enumerate() {
+            nodes.push((
+                id.as_str(),
+                Some(parents[index].as_str()),
+                vec![],
+                message(Role::User, "hi"),
+            ));
+        }
+        let conversation = conversation(None, nodes);
+
+        let branch = active_branch(&conversation).expect("resolves");
+        let stats = ConversationStats::compute(&conversation, &branch);
+        assert_eq!(stats.branch_depth, 9);
+        assert_eq!(stats.total_nodes, 9);
+        assert_eq!(stats.unreachable_nodes, 0);
+    }
+
+    /// Case B: `ghost` hangs off an id the export never included and appears in
+    /// nobody's `children`. The old traversal treated it as a root and reported
+    /// zero unreachable nodes — the textbook orphan, missed.
+    #[test]
+    fn an_orphan_with_a_missing_parent_is_counted_unreachable() {
+        let conversation = conversation(
+            Some("n1"),
+            vec![
+                ("root", None, vec!["n1"], None),
+                ("n1", Some("root"), vec![], message(Role::User, "hi")),
+                (
+                    "ghost",
+                    Some("missing-node"),
+                    vec![],
+                    message(Role::User, "stranded"),
+                ),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        let stats = ConversationStats::compute(&conversation, &branch);
+        assert_eq!(stats.branch_depth, 2);
+        assert_eq!(stats.broken_parents, 1);
+        assert_eq!(stats.unreachable_nodes, 1);
+    }
+
+    /// The invariant behind both cases: whatever the graph looks like, a node
+    /// being rendered can never also be reported as content you are missing.
+    #[test]
+    fn no_node_on_the_branch_is_ever_counted_unreachable() {
+        let graphs = vec![
+            // A branch whose own root has a missing parent.
+            conversation(
+                Some("a1"),
+                vec![
+                    (
+                        "u1",
+                        Some("ghost-root"),
+                        vec!["a1"],
+                        message(Role::User, "q"),
+                    ),
+                    ("a1", Some("u1"), vec![], message(Role::Assistant, "a")),
+                ],
+            ),
+            // A branch made entirely of a cycle.
+            conversation(
+                Some("c"),
+                vec![
+                    ("a", Some("c"), vec!["b"], message(Role::User, "a")),
+                    ("b", Some("a"), vec!["c"], message(Role::Assistant, "b")),
+                    ("c", Some("b"), vec!["a"], message(Role::User, "c")),
+                ],
+            ),
+            // A healthy conversation with an orphan alongside it.
+            conversation(
+                Some("n1"),
+                vec![
+                    ("root", None, vec!["n1"], None),
+                    ("n1", Some("root"), vec![], message(Role::User, "hi")),
+                    ("ghost", Some("nowhere"), vec![], message(Role::User, "x")),
+                ],
+            ),
+        ];
+
+        for conversation in graphs {
+            let branch = active_branch(&conversation).expect("resolves");
+            let stats = ConversationStats::compute(&conversation, &branch);
+            let off_branch = conversation.mapping.len() - branch.node_ids.len();
+            assert!(
+                stats.unreachable_nodes <= off_branch,
+                "counted {} unreachable but only {off_branch} nodes are off the branch",
+                stats.unreachable_nodes
+            );
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::transcript::TranscriptOptions;
 
 pub use deterministic::DeterministicContextGenerator;
 pub use prompt::{PromptContextGenerator, summarization_prompt};
-pub use recent::{RecentSelection, select_recent};
+pub use recent::{RecentSelection, recent_selection, select_recent, visible_messages};
 pub use template::{ContextDocument, SECTION_ORDER, Section};
 
 pub const DEFAULT_RECENT_MESSAGES: usize = 30;

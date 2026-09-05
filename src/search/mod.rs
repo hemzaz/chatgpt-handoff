@@ -78,8 +78,12 @@ impl Default for SearchOptions {
 /// prefix. This bounds both the panic risk and the cost of content search.
 const MAX_HAYSTACK_CHARS: usize = 4096;
 
-/// Minimum query length before an id *prefix* is treated as a strong hit.
-/// Shorter prefixes match far too many ids to be a useful signal.
+/// Minimum query length, **in characters**, before an id *prefix* is treated as
+/// a strong hit. Shorter prefixes match far too many ids to be a useful signal.
+///
+/// Counted with `chars().count()`, never `str::len()`: export ids are
+/// attacker-supplied strings, so a byte count would let a two-character
+/// non-ASCII query clear a gate meant to require four.
 const ID_PREFIX_MIN_LEN: usize = 4;
 
 /// Score awarded to an exact (case-insensitive) id match.
@@ -210,7 +214,7 @@ fn score_id(id: &str, query: &str, query_lower: &str, scorer: &mut FuzzyScorer) 
     if id_lower == query_lower {
         return Some(ID_EXACT_SCORE);
     }
-    if query.len() >= ID_PREFIX_MIN_LEN && id_lower.starts_with(query_lower) {
+    if query.chars().count() >= ID_PREFIX_MIN_LEN && id_lower.starts_with(query_lower) {
         return Some(ID_PREFIX_SCORE);
     }
     scorer.score(id, query)
@@ -446,6 +450,33 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].field, MatchField::Id);
         assert!(found[0].score >= ID_PREFIX_SCORE);
+    }
+
+    #[test]
+    fn id_prefix_gate_counts_characters_not_bytes() {
+        // Regression: the gate once used `str::len()`. "אב" is 2 characters but
+        // 4 bytes, so a byte count would let it clear a 4-character threshold.
+        let short = "אב";
+        assert_eq!(short.chars().count(), 2);
+        assert!(
+            short.len() >= ID_PREFIX_MIN_LEN,
+            "fixture must be >= 4 bytes"
+        );
+
+        let mut scorer = FuzzyScorer::new();
+        assert_ne!(
+            score_id("אבגד-1111", short, short, &mut scorer),
+            Some(ID_PREFIX_SCORE),
+            "a 2-character query must not win the id-prefix score"
+        );
+
+        // ...and the gate still fires at exactly 4 characters of non-ASCII.
+        let long = "אבגד";
+        assert_eq!(long.chars().count(), ID_PREFIX_MIN_LEN);
+        assert_eq!(
+            score_id("אבגד-1111", long, long, &mut scorer),
+            Some(ID_PREFIX_SCORE)
+        );
     }
 
     #[test]

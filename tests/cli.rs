@@ -459,8 +459,12 @@ fn extract_prompt_mode_adds_the_summarization_prompt() {
     );
 }
 
+/// Cross-checks the *document* against the reported number. Asserting only the
+/// metadata field would certify whatever the code happens to compute — the
+/// reason an earlier version of this test survived a real divergence between
+/// `metadata.json` and `context.md`.
 #[test]
-fn extract_honours_the_recent_message_budget() {
+fn the_reported_recent_budget_matches_what_context_md_contains() {
     let dir = tempdir();
     let out = dir.path().join("handoff");
     let output = cli()
@@ -478,7 +482,27 @@ fn extract_honours_the_recent_message_budget() {
         .output()
         .expect("run");
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
-    assert_eq!(parsed["metadata"]["recent_messages_preserved"], 2);
+    let reported = parsed["metadata"]["recent_messages_preserved"]
+        .as_u64()
+        .expect("recent_messages_preserved must be a number");
+    assert_eq!(reported, 2);
+
+    let context = std::fs::read_to_string(out.join("context.md")).expect("read context.md");
+    let recent = context
+        .split("## Recent Conversation")
+        .nth(1)
+        .and_then(|tail| tail.split("## Continuation Instructions").next())
+        .expect("Recent Conversation section");
+
+    // The tail renders one `###` heading per preserved message.
+    let rendered = recent
+        .lines()
+        .filter(|line| line.starts_with("### "))
+        .count() as u64;
+    assert_eq!(
+        rendered, reported,
+        "metadata says {reported} preserved, context.md contains {rendered}:\n{recent}"
+    );
 }
 
 #[test]

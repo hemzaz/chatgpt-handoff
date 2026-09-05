@@ -198,6 +198,26 @@ proptest! {
         }
     }
 
+    /// The non-negotiable one: a node being rendered can never simultaneously
+    /// be reported as content the user is missing. The old children-based
+    /// reachability count violated this on any export whose `children` lists
+    /// were empty.
+    #[test]
+    fn no_branch_node_is_ever_counted_unreachable(conversation in any_conversation()) {
+        let Ok(branch) = active_branch(&conversation) else {
+            return Ok(());
+        };
+        let stats = ConversationStats::compute(&conversation, &branch);
+        let off_branch = conversation.mapping.len() - branch.node_ids.len();
+        prop_assert!(
+            stats.unreachable_nodes <= off_branch,
+            "{} unreachable but only {} nodes are off the branch {:?}",
+            stats.unreachable_nodes,
+            off_branch,
+            branch.node_ids
+        );
+    }
+
     /// `HashMap` iteration order is not stable across runs, so every choice the
     /// traversal makes among alternatives must be explicitly ordered.
     #[test]

@@ -10,11 +10,13 @@
 //! export of two thousand conversations must not cost the user the other one
 //! thousand nine hundred and ninety-nine.
 
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::ExportSource;
+use super::{ExportSource, LoadOptions};
 use crate::error::{Error, Result};
 use crate::model::{Conversation, ConversationSet, RawConversation};
 
@@ -31,19 +33,68 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 /// vector is allowed to grow naturally beyond it.
 const MAX_PREALLOCATED_CONVERSATIONS: usize = 4096;
 
+/// Largest buffer we pre-allocate for a file read, regardless of the size the
+/// filesystem reports. Mirrors the archive reader's reservation cap.
+const MAX_PREALLOCATED_READ_BYTES: u64 = 1 << 20;
+
 /// A `.json` export file on disk.
 #[derive(Debug, Clone)]
 pub struct JsonSource {
     /// Path to the export file.
     pub path: PathBuf,
+    /// Safety limits. A loose `.json` file is exactly as easy to hand someone
+    /// as a hostile zip, so `max_unpacked_bytes` applies here too — the flag
+    /// promises a general limit, not a zip-only one.
+    pub options: LoadOptions,
 }
 
 impl JsonSource {
-    /// Point at a `.json` export file. No I/O happens until [`ExportSource::load`].
+    /// Point at a `.json` export file with default limits.
+    ///
+    /// No I/O happens until [`ExportSource::load`].
     pub fn new(path: impl AsRef<Path>) -> Self {
+        Self::with_options(path, LoadOptions::default())
+    }
+
+    /// Point at a `.json` export file with explicit limits.
+    pub fn with_options(path: impl AsRef<Path>, options: LoadOptions) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            options,
         }
+    }
+
+    /// Read the whole file, refusing anything over `max_unpacked_bytes`.
+    ///
+    /// Checked twice, exactly as the archive reader does it: once against the
+    /// size the filesystem reports, and once against the bytes actually
+    /// delivered, since a file can grow (or a synthetic filesystem can lie)
+    /// between the `stat` and the read.
+    fn read_capped(&self) -> Result<Vec<u8>> {
+        let limit = self.options.max_unpacked_bytes;
+        let file = std::fs::File::open(&self.path).map_err(|e| Error::io(&self.path, e))?;
+
+        let reported = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        if reported > limit {
+            return Err(super::size_refusal(self.describe(), reported, limit));
+        }
+
+        let mut bytes = Vec::with_capacity(reported.min(MAX_PREALLOCATED_READ_BYTES) as usize);
+        file.take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::io(&self.path, e))?;
+
+        if bytes.len() as u64 > limit {
+            return Err(super::size_refusal(
+                format!(
+                    "{} (grew past the {reported} bytes it reported)",
+                    self.describe()
+                ),
+                bytes.len() as u64,
+                limit,
+            ));
+        }
+        Ok(bytes)
     }
 }
 
@@ -53,32 +104,115 @@ impl ExportSource for JsonSource {
     }
 
     fn load(&self) -> Result<ConversationSet> {
-        let bytes = std::fs::read(&self.path).map_err(|source| Error::io(&self.path, source))?;
-        let origin = self.path.display().to_string();
+        let bytes = self.read_capped()?;
+        let origin = self.describe();
         let parsed = parse_conversations_reporting(&bytes, &origin)?;
+        drop(bytes);
+        let warnings = parsed.warnings(&origin);
         Ok(ConversationSet {
             conversations: parsed.conversations,
-            warnings: skipped_warning(parsed.skipped, &origin)
-                .into_iter()
-                .collect(),
+            warnings,
             source: origin,
         })
     }
 
     fn raw_conversation(&self, conversation_id: &str) -> Result<Option<Value>> {
-        let bytes = std::fs::read(&self.path).map_err(|source| Error::io(&self.path, source))?;
-        find_raw_conversation(&bytes, &self.path.display().to_string(), conversation_id)
+        let bytes = self.read_capped()?;
+        find_raw_conversation(&bytes, &self.describe(), conversation_id)
     }
 }
 
 /// Result of parsing one export document.
 #[derive(Debug, Clone)]
 pub struct ParsedConversations {
-    /// Conversations that parsed successfully, in document order.
+    /// Conversations that parsed successfully, deduplicated by id, in
+    /// first-occurrence order.
     pub conversations: Vec<Conversation>,
     /// Array elements that were not a usable conversation object and were
     /// therefore skipped.
     pub skipped: usize,
+    /// Duplicate ids that were collapsed into a single conversation.
+    pub collapsed: usize,
+}
+
+impl ParsedConversations {
+    /// Warnings describing everything that was skipped or collapsed.
+    pub fn warnings(&self, origin: &str) -> Vec<String> {
+        [
+            skipped_warning(self.skipped, origin),
+            collapsed_warning(self.collapsed, origin),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+/// Deduplicates conversations by id, keeping the freshest copy.
+///
+/// This is the *single* definition of "the same conversation seen twice", used
+/// by the loose-JSON reader for duplicates within one document and by the
+/// archive reader for duplicates across several files. Having two definitions
+/// is what let `.json` and `.zip` inputs disagree about the same bytes.
+///
+/// # Rule
+///
+/// The copy with the greatest `update_time` wins; a missing `update_time`
+/// counts as older than any timestamp, so a dated copy always beats an undated
+/// one. On an exact tie — including two undated copies — the **first**
+/// occurrence in traversal order is kept, where traversal order is document
+/// order within a file and sorted-entry-name order across archive entries.
+/// That makes the outcome independent of how the exporter or the archive
+/// happened to order things.
+#[derive(Debug, Default)]
+pub(crate) struct Dedupe {
+    conversations: Vec<Conversation>,
+    by_id: HashMap<String, usize>,
+    collapsed: usize,
+}
+
+impl Dedupe {
+    /// Add conversations, collapsing any id already seen.
+    ///
+    /// Conversations are moved, never cloned; only the id is copied, as the
+    /// index key.
+    pub(crate) fn absorb(&mut self, incoming: impl IntoIterator<Item = Conversation>) {
+        for conversation in incoming {
+            match self.by_id.get(&conversation.id).copied() {
+                Some(existing) => {
+                    self.collapsed = self.collapsed.saturating_add(1);
+                    let Some(slot) = self.conversations.get_mut(existing) else {
+                        continue;
+                    };
+                    // Strictly greater: a tie leaves the incumbent in place, so
+                    // the first occurrence wins. `NaN` also compares false,
+                    // which lands in the same deterministic place.
+                    if freshness(&conversation) > freshness(slot) {
+                        *slot = conversation;
+                    }
+                }
+                None => {
+                    self.by_id
+                        .insert(conversation.id.clone(), self.conversations.len());
+                    self.conversations.push(conversation);
+                }
+            }
+        }
+    }
+
+    /// How many duplicates have been collapsed so far.
+    pub(crate) fn collapsed(&self) -> usize {
+        self.collapsed
+    }
+
+    pub(crate) fn into_conversations(self) -> Vec<Conversation> {
+        self.conversations
+    }
+}
+
+/// Sort key for "which copy of this conversation is newer".
+pub(crate) fn freshness(conversation: &Conversation) -> f64 {
+    conversation.update_time.unwrap_or(f64::NEG_INFINITY)
 }
 
 /// Parse an export document, discarding the count of skipped elements.
@@ -102,20 +236,27 @@ pub fn parse_conversations(bytes: &[u8], origin: &str) -> Result<Vec<Conversatio
 pub fn parse_conversations_reporting(bytes: &[u8], origin: &str) -> Result<ParsedConversations> {
     let items = document_elements(bytes, origin)?;
 
-    let mut conversations = Vec::with_capacity(items.len().min(MAX_PREALLOCATED_CONVERSATIONS));
+    let mut deduped = Dedupe::default();
+    deduped
+        .conversations
+        .reserve(items.len().min(MAX_PREALLOCATED_CONVERSATIONS));
     let mut skipped = 0usize;
     for (index, item) in items.into_iter().enumerate() {
         // A non-object element, or an object whose typed fields have the wrong
         // shape, costs us that one conversation and nothing else. The index is
         // the document position, so synthetic ids stay stable across loads.
         match serde_json::from_value::<RawConversation>(item) {
-            Ok(raw) => conversations.push(raw.into_conversation(index)),
+            // Deduplication happens here rather than in the archive reader so
+            // that a `.json` file and a `.zip` of those exact bytes cannot
+            // disagree about how many conversations they contain.
+            Ok(raw) => deduped.absorb([raw.into_conversation(index)]),
             Err(_) => skipped = skipped.saturating_add(1),
         }
     }
 
     Ok(ParsedConversations {
-        conversations,
+        collapsed: deduped.collapsed(),
+        conversations: deduped.into_conversations(),
         skipped,
     })
 }
@@ -211,6 +352,23 @@ pub(crate) fn skipped_warning(skipped: usize, origin: &str) -> Option<String> {
     }
 }
 
+/// Human-readable warning for collapsed duplicates, or `None` if there were
+/// none.
+///
+/// Collapsing is quieter than the ambiguity error it replaces, so it must not
+/// be silent: dropping a conversation without saying so is worse than either.
+pub(crate) fn collapsed_warning(collapsed: usize, origin: &str) -> Option<String> {
+    match collapsed {
+        0 => None,
+        1 => Some(format!(
+            "collapsed 1 duplicate conversation id in {origin}; kept the copy with the newest update_time"
+        )),
+        n => Some(format!(
+            "collapsed {n} duplicate conversation ids in {origin}; kept the copy with the newest update_time"
+        )),
+    }
+}
+
 fn unexpected_shape(origin: &str) -> Error {
     Error::UnexpectedJsonShape {
         origin: origin.to_string(),
@@ -288,6 +446,136 @@ mod tests {
         assert_eq!(parsed.conversations.len(), 2);
         assert_eq!(parsed.skipped, 3);
         assert_eq!(parsed.conversations[1].id, "b");
+    }
+
+    const DUPLICATES: &str = r#"[
+        {"id": "dup", "title": "old", "update_time": 100.0},
+        {"id": "solo", "title": "only me"},
+        {"id": "dup", "title": "new", "update_time": 200.0}
+    ]"#;
+
+    #[test]
+    fn duplicate_ids_collapse_to_the_freshest_copy() {
+        let parsed = parse_conversations_reporting(DUPLICATES.as_bytes(), "dupes.json")
+            .expect("valid document");
+        assert_eq!(parsed.conversations.len(), 2);
+        assert_eq!(parsed.collapsed, 1);
+        assert_eq!(
+            parsed.conversations[0].display_title(),
+            "new",
+            "the freshest copy wins"
+        );
+        assert_eq!(
+            parsed.conversations[0].id, "dup",
+            "the survivor keeps the first occurrence's position"
+        );
+        assert_eq!(parsed.conversations[1].id, "solo");
+    }
+
+    #[test]
+    fn collapse_is_order_independent_and_ties_keep_the_first() {
+        let reversed = r#"[
+            {"id": "dup", "title": "new", "update_time": 200.0},
+            {"id": "dup", "title": "old", "update_time": 100.0}
+        ]"#;
+        let parsed =
+            parse_conversations_reporting(reversed.as_bytes(), "t.json").expect("valid document");
+        assert_eq!(parsed.conversations[0].display_title(), "new");
+
+        let tied = r#"[{"id": "d", "title": "first"}, {"id": "d", "title": "second"}]"#;
+        let parsed =
+            parse_conversations_reporting(tied.as_bytes(), "t.json").expect("valid document");
+        assert_eq!(parsed.conversations.len(), 1);
+        assert_eq!(
+            parsed.conversations[0].display_title(),
+            "first",
+            "an exact tie keeps the first occurrence"
+        );
+    }
+
+    #[test]
+    fn collapsing_is_never_silent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("conversations.json");
+        std::fs::write(&path, DUPLICATES).expect("write fixture");
+
+        let set = JsonSource::new(&path).load().expect("load succeeds");
+        assert_eq!(set.len(), 2);
+        assert!(
+            set.warnings
+                .iter()
+                .any(|w| w.contains("collapsed 1 duplicate conversation id")),
+            "{:?}",
+            set.warnings
+        );
+    }
+
+    #[test]
+    fn collapsed_warning_is_pluralized_and_optional() {
+        assert_eq!(collapsed_warning(0, "x.json"), None);
+        assert!(
+            collapsed_warning(1, "x.json")
+                .expect("singular")
+                .contains("collapsed 1 duplicate conversation id in x.json")
+        );
+        assert!(
+            collapsed_warning(3, "x.json")
+                .expect("plural")
+                .contains("collapsed 3 duplicate conversation ids")
+        );
+    }
+
+    #[test]
+    fn an_oversized_file_is_refused_before_it_is_parsed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("conversations.json");
+        let body = format!(r#"[{{"id": "a", "title": "{}"}}]"#, "x".repeat(4096));
+        std::fs::write(&path, &body).expect("write fixture");
+
+        let source = JsonSource::with_options(
+            &path,
+            LoadOptions {
+                max_unpacked_bytes: 64,
+            },
+        );
+        match source.load().expect_err("over the limit") {
+            Error::ArchiveEntryTooLarge {
+                entry,
+                declared,
+                limit,
+            } => {
+                assert_eq!(entry, path.display().to_string());
+                assert_eq!(limit, 64);
+                assert_eq!(declared, body.len() as u64);
+            }
+            other => panic!("expected a size refusal, got {other:?}"),
+        }
+        assert!(
+            source.raw_conversation("a").is_err(),
+            "raw path is capped too"
+        );
+    }
+
+    #[test]
+    fn a_file_inside_the_limit_still_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("conversations.json");
+        std::fs::write(&path, ARRAY).expect("write fixture");
+
+        let set = JsonSource::with_options(
+            &path,
+            LoadOptions {
+                max_unpacked_bytes: 4096,
+            },
+        )
+        .load()
+        .expect("inside the limit");
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn new_uses_the_default_limit() {
+        assert_eq!(JsonSource::new("x.json").options, LoadOptions::default());
     }
 
     #[test]

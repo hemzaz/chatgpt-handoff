@@ -369,11 +369,17 @@ fn carries_a_message(conversation: &Conversation, node_ids: &[String]) -> bool {
 }
 
 /// What a node's `parent` chain looks like: how many nodes
-/// [`walk_to_root`] would collect starting there, and how many carry a message.
+/// [`walk_to_root`] would collect starting there, how many carry a message, and
+/// whether the chain ends cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Chain {
     length: usize,
     messages: usize,
+    /// True when the chain terminates at a genuine root — a node whose `parent`
+    /// is `None`. False when it dies at a parent missing from the mapping or
+    /// runs into a cycle, i.e. when the node is not connected to any beginning
+    /// the conversation actually has.
+    grounded: bool,
 }
 
 /// The node whose `parent` chain is longest — the leaf the fallback should
@@ -427,6 +433,28 @@ fn longest_parent_chain(conversation: &Conversation) -> Option<&str> {
     best.map(|(id, _)| id)
 }
 
+/// Ids whose `parent` chain never reaches a genuine root.
+///
+/// A node is *grounded* when following `parent` from it terminates at a node
+/// with no parent. It is ungrounded when the chain dies at an id missing from
+/// the mapping, or runs into a cycle — in both cases the node is detached from
+/// any beginning the conversation actually has.
+///
+/// This is deliberately the same relation [`walk_to_root`] traverses. Defining
+/// connectivity on `children` instead is what made `unreachable_nodes` report
+/// eight stranded nodes for a conversation whose `parent` chain was completely
+/// intact, while missing a real orphan whose parent id was absent.
+///
+/// Shares the memoized [`parent_chains`] walk, so it stays O(V), iterative and
+/// cycle-guarded.
+pub(super) fn ungrounded_node_ids(conversation: &Conversation) -> HashSet<&str> {
+    parent_chains(conversation)
+        .into_iter()
+        .filter(|(_, chain)| !chain.grounded)
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Chain length and message count for every node, measured along `parent`.
 ///
 /// Iterative and memoized. The `parent` relation is a functional graph — one
@@ -458,9 +486,13 @@ fn parent_chains(conversation: &Conversation) -> HashMap<&str, Chain> {
         // Metrics of the node just above the walk: zero when the walk ended at
         // a root or a broken parent, the memoized chain when it met a known
         // node, the cycle's own chain when it met itself.
+        // Overwritten on every path that actually terminates; `false` is the
+        // conservative default so an unforeseen exit reports damage rather
+        // than hiding it.
         let mut above = Chain {
             length: 0,
             messages: 0,
+            grounded: false,
         };
         let mut cycle_at = None;
         let mut cursor = Some(start);
@@ -482,9 +514,26 @@ fn parent_chains(conversation: &Conversation) -> HashMap<&str, Chain> {
             path.push(id);
             cursor = match node.parent.as_deref() {
                 Some(parent) if conversation.node(parent).is_some() => Some(parent),
-                // No parent, or a parent the export never included: either way
-                // this node is an effective root and the chain ends here.
-                _ => None,
+                // A genuine root: the chain ends cleanly.
+                None => {
+                    above = Chain {
+                        length: 0,
+                        messages: 0,
+                        grounded: true,
+                    };
+                    None
+                }
+                // A parent the export never included. This node is an effective
+                // root for walking purposes, but it is *not* grounded: the real
+                // beginning of the conversation is missing.
+                Some(_) => {
+                    above = Chain {
+                        length: 0,
+                        messages: 0,
+                        grounded: false,
+                    };
+                    None
+                }
             };
         }
 
@@ -495,6 +544,9 @@ fn parent_chains(conversation: &Conversation) -> HashMap<&str, Chain> {
                     .iter()
                     .filter(|id| conversation.node(id).is_some_and(|n| n.has_message()))
                     .count(),
+                // A cycle never reaches a root, so nothing on or below it is
+                // grounded.
+                grounded: false,
             };
             for &id in &path[index..] {
                 known.insert(id, cycle);
@@ -510,6 +562,7 @@ fn parent_chains(conversation: &Conversation) -> HashMap<&str, Chain> {
                 length: above.length + 1,
                 messages: above.messages
                     + usize::from(conversation.node(id).is_some_and(|n| n.has_message())),
+                grounded: above.grounded,
             };
             known.insert(id, above);
         }

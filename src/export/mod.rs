@@ -12,8 +12,27 @@ pub mod json;
 pub mod loader;
 pub mod zip;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::ConversationSet;
+
+/// Build the "this input is over the safety limit" error.
+///
+/// Every size refusal in this module funnels through here, for two reasons.
+/// First, the caller supplies a `label` that says *which* of the two checks
+/// fired — the input's own declared size, or the bytes it actually delivered
+/// after lying about that size — because "we refused it" without "and here is
+/// why" is useless to someone debugging a rejected export. Second, this reuses
+/// [`Error::ArchiveEntryTooLarge`] for loose `.json` files too, which is a
+/// deliberate compromise: `error.rs` is not ours to edit, and a matchable error
+/// with one inaccurate word ("archive") beats an unmatchable one. Swapping in a
+/// dedicated variant is a change to this function alone.
+pub(crate) fn size_refusal(label: String, bytes: u64, limit: u64) -> Error {
+    Error::ArchiveEntryTooLarge {
+        entry: label,
+        declared: bytes,
+        limit,
+    }
+}
 
 /// Safety limits applied while reading an export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
