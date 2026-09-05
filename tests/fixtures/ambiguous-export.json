@@ -1,0 +1,179 @@
+[
+  {
+    "id": "amb-0001",
+    "title": "Meeting notes 2026-03-01",
+    "create_time": 1700000000.0,
+    "update_time": 1700000001.0,
+    "current_node": "n1",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "n0"
+        ]
+      },
+      "n0": {
+        "id": "n0",
+        "parent": "root",
+        "children": [
+          "n1"
+        ],
+        "message": {
+          "id": "m0",
+          "author": {
+            "role": "user",
+            "name": null
+          },
+          "create_time": 1700000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Opening question for Meeting notes 2026-03-01."
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "n0",
+        "children": [],
+        "message": {
+          "id": "m1",
+          "author": {
+            "role": "assistant",
+            "name": null
+          },
+          "create_time": 1700000001.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Reply about Meeting notes 2026-03-01."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "amb-0002",
+    "title": "Meeting notes 2026-03-02",
+    "create_time": 1700000000.0,
+    "update_time": 1700000002.0,
+    "current_node": "n1",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "n0"
+        ]
+      },
+      "n0": {
+        "id": "n0",
+        "parent": "root",
+        "children": [
+          "n1"
+        ],
+        "message": {
+          "id": "m0",
+          "author": {
+            "role": "user",
+            "name": null
+          },
+          "create_time": 1700000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Opening question for Meeting notes 2026-03-02."
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "n0",
+        "children": [],
+        "message": {
+          "id": "m1",
+          "author": {
+            "role": "assistant",
+            "name": null
+          },
+          "create_time": 1700000001.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Reply about Meeting notes 2026-03-02."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "amb-0003",
+    "title": "Meeting notes 2026-03-03",
+    "create_time": 1700000000.0,
+    "update_time": 1700000003.0,
+    "current_node": "n1",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "message": null,
+        "parent": null,
+        "children": [
+          "n0"
+        ]
+      },
+      "n0": {
+        "id": "n0",
+        "parent": "root",
+        "children": [
+          "n1"
+        ],
+        "message": {
+          "id": "m0",
+          "author": {
+            "role": "user",
+            "name": null
+          },
+          "create_time": 1700000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Opening question for Meeting notes 2026-03-03."
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "n0",
+        "children": [],
+        "message": {
+          "id": "m1",
+          "author": {
+            "role": "assistant",
+            "name": null
+          },
+          "create_time": 1700000001.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Reply about Meeting notes 2026-03-03."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  }
+]

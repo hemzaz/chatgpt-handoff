@@ -683,6 +683,34 @@ fn a_selector_matching_nothing_fails_with_a_useful_message() {
         .stderr(predicate::str::contains("no conversation"));
 }
 
+/// Refusing to guess is only half of correct behavior: the user must also be
+/// able to see what matched, or they cannot narrow the selector.
+#[test]
+fn an_ambiguous_selector_lists_the_candidates_instead_of_guessing() {
+    let output = cli()
+        .args(["show"])
+        .arg(fixture("ambiguous-export.json"))
+        .arg("Meeting notes")
+        .output()
+        .expect("run");
+    assert!(!output.status.success(), "must not silently pick one");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ambiguous"), "{stderr}");
+    assert!(
+        stderr.contains("amb-0001"),
+        "candidate ids must be listed:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("amb-0002"),
+        "candidate ids must be listed:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--conversation") || stderr.contains("--pick"),
+        "must tell the user how to disambiguate:\n{stderr}"
+    );
+}
+
 #[test]
 fn a_command_needing_a_conversation_refuses_without_a_selector() {
     cli()

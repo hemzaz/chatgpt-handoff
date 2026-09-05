@@ -116,11 +116,35 @@ pub enum SelectError {
     #[error("no conversation selected\nhint: pass --conversation ID, --title TITLE, or a query")]
     NoSelector,
 
-    #[error("{query} is ambiguous; {} candidates matched", candidates.len())]
+    #[error(
+        "{query} is ambiguous; {} candidates matched:\n{}\nhint: re-run with --conversation ID, \
+         or --pick to choose interactively",
+        candidates.len(),
+        render_candidates(candidates)
+    )]
     Ambiguous {
         query: String,
         candidates: Vec<AmbiguousCandidate>,
     },
+}
+
+/// Render ambiguous candidates as an indented, score-ordered list.
+///
+/// Refusing to guess is only half the job: the user also has to be able to see
+/// what matched, or they have no way to narrow the selector.
+fn render_candidates(candidates: &[AmbiguousCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "  {:>3}  {}  {}",
+                candidate.score,
+                crate::text::truncate_graphemes(&candidate.id, 12),
+                crate::text::sanitize_display(&candidate.title)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One candidate rendered when a selector is ambiguous.
