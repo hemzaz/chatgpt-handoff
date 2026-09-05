@@ -47,7 +47,7 @@ chatgpt-handoff list ~/Downloads/chatgpt-export.zip
 chatgpt-handoff find conversations.json "iboga"
 
 # Show one conversation, selected by an exact or fuzzy title
-chatgpt-handoff show conversations.json --title "איבוגה גמילה מאופיאטים"
+chatgpt-handoff show conversations.json --title "iboga"
 
 # Render just the active branch as a standalone archival Markdown transcript
 chatgpt-handoff transcript conversations.json --conversation conv-linear-0001
@@ -267,11 +267,19 @@ export that is otherwise legitimate:
   *declares*, and once against the bytes actually delivered, since the
   declared size is written by whoever built the archive and can lie. Raise
   the cap with `--max-unpacked-bytes` if a legitimate export trips it.
-- **Terminal-control sanitization.** Anything that gets echoed to a terminal —
-  conversation titles, archive entry names — has C0/C1 control characters and
-  Unicode bidirectional *override* characters stripped first, closing off
-  cursor-movement and right-to-left display-spoofing tricks. Legitimate
-  directional *marks* (used by real Hebrew/Arabic text) are left alone.
+- **Terminal-control sanitization.** Anything echoed to a terminal or written
+  into a generated document — conversation titles, conversation **ids**,
+  archive entry names — has C0/C1 control characters and Unicode bidirectional
+  *override* characters stripped first, closing off cursor-movement and
+  right-to-left display-spoofing tricks. Legitimate directional *marks* (used
+  by real Hebrew/Arabic text) are left alone.
+- **Single-line flattening of ids and titles.** Both are single-line fields in
+  practice and attacker-supplied in principle, so whitespace in them is
+  collapsed before display. Without this, a newline embedded in a title or id
+  fabricates an entire extra row of `list` output — a conversation that does
+  not exist, with a date and title of the attacker's choosing. The raw id is
+  still used for lookups and in `--json` payloads, where nothing interprets
+  the bytes.
 
 ## Development
 
