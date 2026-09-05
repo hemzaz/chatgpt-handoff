@@ -202,7 +202,7 @@ impl ContentPart {
 }
 
 /// The body of a message.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum MessageContent {
     /// `content_type: "text"` — the overwhelmingly common case.
     Text { parts: Vec<String> },
@@ -223,13 +223,8 @@ pub enum MessageContent {
         raw: Box<Value>,
     },
     /// Absent or empty content.
+    #[default]
     Empty,
-}
-
-impl Default for MessageContent {
-    fn default() -> Self {
-        MessageContent::Empty
-    }
 }
 
 impl MessageContent {

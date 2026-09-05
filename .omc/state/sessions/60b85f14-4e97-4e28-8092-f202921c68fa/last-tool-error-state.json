@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rtk grep -n \\\"REJECTION_CUES\\\\|fn trim_token\\\\|fn cue_bullets\\\\|fn rejections_section\\\\|fn preferences_section\\\\|fn recent_section\\\\|fn capitalized_runs\\\\|fn frequent_terms\\\\|fn dedup_capp...",
+  "error": "Exit code 2\nrg: regex parse error:\n    (?:REJECTION_CUES|fn trim_token|fn cue_bullets|fn rejections_section|fn preferences_section|fn recent_section|fn capitalized_runs|fn frequent_terms|fn dedup_capped|fn quoted_terms|set_section(\"User Pref|set_section(\"Rejected|set_section(\"Recent)\n                                                                                                                                                                                                                       ...",
+  "timestamp": "2026-09-05T12:40:49.755Z",
+  "retry_count": 1
+}

@@ -4,7 +4,7 @@
 //! `anyhow`, to print to stdout, or to talk to the terminal.
 
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -318,7 +318,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
 // ---------------------------------------------------------------- loading --
 
-fn load(input: &PathBuf, options: &LoadOptions) -> Result<ConversationSet> {
+fn load(input: &Path, options: &LoadOptions) -> Result<ConversationSet> {
     let set = export::load(input, options)
         .with_context(|| format!("could not read export {}", input.display()))?;
     for warning in &set.warnings {
@@ -472,7 +472,8 @@ fn cmd_list(args: &ListArgs, options: &LoadOptions, tz: TimeZoneMode) -> Result<
         return Ok(());
     }
 
-    println!("{:<36}  {:<16}  {}", "ID", "UPDATED", "TITLE");
+    const HEADERS: [&str; 3] = ["ID", "UPDATED", "TITLE"];
+    println!("{:<36}  {:<16}  {}", HEADERS[0], HEADERS[1], HEADERS[2]);
     for conversation in &conversations {
         println!(
             "{:<36}  {:<16}  {}",
@@ -845,9 +846,10 @@ fn cmd_inspect(args: &InspectArgs, options: &LoadOptions) -> Result<()> {
     }
 
     if args.nodes {
+        const NODE_HEADERS: [&str; 5] = ["NODE", "ROLE", "CHILD", "CHARS", "ON BRANCH"];
         println!(
             "\n{:<38} {:<12} {:>6} {:>8}  {}",
-            "NODE", "ROLE", "CHILD", "CHARS", "ON BRANCH"
+            NODE_HEADERS[0], NODE_HEADERS[1], NODE_HEADERS[2], NODE_HEADERS[3], NODE_HEADERS[4]
         );
         for id in branch.node_ids.iter().map(String::as_str).chain(off_branch) {
             let node = conversation.node(id);

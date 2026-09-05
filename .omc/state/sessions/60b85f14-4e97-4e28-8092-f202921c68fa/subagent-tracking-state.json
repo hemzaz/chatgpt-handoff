@@ -1,0 +1,25 @@
+{
+  "agents": [
+    {
+      "agent_id": "acontext-engineer-144d1b871e5ae8b0",
+      "agent_type": "context-engineer",
+      "started_at": "2026-09-05T12:39:34.569Z",
+      "parent_mode": "none",
+      "status": "running",
+      "synthetic": true,
+      "telemetry_status": "unmatched_stop",
+      "telemetry_note": "SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."
+    },
+    {
+      "agent_id": "areviewer-3a7afabd84df4c90",
+      "agent_type": "reviewer",
+      "started_at": "2026-09-05T12:40:11.718Z",
+      "parent_mode": "none",
+      "status": "running"
+    }
+  ],
+  "total_spawned": 2,
+  "total_completed": 1,
+  "total_failed": 0,
+  "last_updated": "2026-09-05T12:40:11.827Z"
+}

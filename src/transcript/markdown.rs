@@ -435,6 +435,8 @@ mod tests {
     }
 
     #[test]
+    // `3..1` is deliberately reversed: a caller must not be able to panic us.
+    #[allow(clippy::reversed_empty_ranges)]
     fn render_range_clamps_out_of_bounds_instead_of_panicking() {
         let m1 = text_message("user", "one");
         let messages = vec![bm("1", &m1)];

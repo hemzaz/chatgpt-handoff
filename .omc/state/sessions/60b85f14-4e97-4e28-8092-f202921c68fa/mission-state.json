@@ -1,0 +1,63 @@
+{
+  "updatedAt": "2026-09-05T12:40:11.718Z",
+  "missions": [
+    {
+      "id": "session:60b85f14-4e97-4e28-8092-f202921c68fa:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-09-05T12:39:34.569Z",
+      "updatedAt": "2026-09-05T12:40:11.718Z",
+      "status": "running",
+      "workerCount": 2,
+      "taskCounts": {
+        "total": 2,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 2,
+        "completed": 0,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "context-engineer:acontex",
+          "role": "context-engineer",
+          "ownership": "acontext-engineer-144d1b871e5ae8b0",
+          "status": "running",
+          "currentStep": null,
+          "latestUpdate": null,
+          "completedSummary": null,
+          "updatedAt": "2026-09-05T12:39:34.569Z"
+        },
+        {
+          "name": "reviewer:areview",
+          "role": "reviewer",
+          "ownership": "areviewer-3a7afabd84df4c90",
+          "status": "running",
+          "currentStep": null,
+          "latestUpdate": null,
+          "completedSummary": null,
+          "updatedAt": "2026-09-05T12:40:11.718Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:acontext-engineer-144d1b871e5ae8b0:2026-09-05T12:39:34.569Z",
+          "at": "2026-09-05T12:39:34.569Z",
+          "kind": "update",
+          "agent": "context-engineer:acontex",
+          "detail": "started context-engineer:acontex",
+          "sourceKey": "session-start:acontext-engineer-144d1b871e5ae8b0"
+        },
+        {
+          "id": "session-start:areviewer-3a7afabd84df4c90:2026-09-05T12:40:11.718Z",
+          "at": "2026-09-05T12:40:11.718Z",
+          "kind": "update",
+          "agent": "reviewer:areview",
+          "detail": "started reviewer:areview",
+          "sourceKey": "session-start:areviewer-3a7afabd84df4c90"
+        }
+      ]
+    }
+  ]
+}
