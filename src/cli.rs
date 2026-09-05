@@ -645,8 +645,12 @@ fn cmd_extract(args: &ExtractArgs, options: &LoadOptions, tz: TimeZoneMode) -> R
     };
 
     let stats = ConversationStats::compute(conversation, &branch);
-    let messages = branch.messages(conversation);
-    let recent = context::select_recent(&messages, args.recent_messages, args.recent_chars);
+    // Deliberately not `select_recent` over `branch.messages(...)`: the context
+    // generator applies the role/hidden filter first, so computing the tail
+    // here over the unfiltered branch made metadata.json and stdout report a
+    // number the document did not contain. `recent_selection` is the one
+    // definition both sides share.
+    let recent = context::recent_selection(conversation, &branch, &context_options);
 
     let mode: ContextMode = args.context_mode.into();
     let generator = mode.generator();
