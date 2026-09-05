@@ -117,15 +117,37 @@ pub enum SelectError {
     NoSelector,
 
     #[error(
-        "{query} is ambiguous; {} candidates matched:\n{}\nhint: re-run with --conversation ID, \
-         or --pick to choose interactively",
+        "{query} is ambiguous; {} candidates matched:\n{}\n{}",
         candidates.len(),
-        render_candidates(candidates)
+        render_candidates(candidates),
+        disambiguation_hint(candidates)
     )]
     Ambiguous {
         query: String,
         candidates: Vec<AmbiguousCandidate>,
     },
+}
+
+/// Suggest a selector that can actually distinguish these candidates.
+///
+/// `--conversation ID` is the usual advice, but it is a dead end when the
+/// candidates share an id — which happens when one export contains the same
+/// conversation twice. Point at something that can discriminate instead.
+fn disambiguation_hint(candidates: &[AmbiguousCandidate]) -> String {
+    let ids_are_distinct = candidates
+        .iter()
+        .map(|candidate| &candidate.id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == candidates.len();
+
+    if ids_are_distinct {
+        "hint: re-run with --conversation ID, or --pick to choose interactively".to_string()
+    } else {
+        "hint: these candidates share a conversation id; select with --title TITLE, \
+         or --pick to choose interactively"
+            .to_string()
+    }
 }
 
 /// Render ambiguous candidates as an indented, score-ordered list.
@@ -145,6 +167,86 @@ fn render_candidates(candidates: &[AmbiguousCandidate]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(id: &str, title: &str) -> AmbiguousCandidate {
+        AmbiguousCandidate {
+            id: id.to_string(),
+            title: title.to_string(),
+            score: 100,
+        }
+    }
+
+    #[test]
+    fn ambiguity_lists_every_candidate() {
+        let err = SelectError::Ambiguous {
+            query: "query \"notes\"".to_string(),
+            candidates: vec![
+                candidate("aaa-111", "Notes one"),
+                candidate("bbb-222", "Notes two"),
+            ],
+        };
+        let rendered = err.to_string();
+        for expected in ["aaa-111", "bbb-222", "Notes one", "Notes two"] {
+            assert!(
+                rendered.contains(expected),
+                "{expected} missing from:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn hint_points_at_the_id_when_ids_can_discriminate() {
+        let err = SelectError::Ambiguous {
+            query: "q".to_string(),
+            candidates: vec![candidate("aaa-111", "One"), candidate("bbb-222", "Two")],
+        };
+        assert!(err.to_string().contains("--conversation ID"));
+    }
+
+    #[test]
+    fn hint_points_elsewhere_when_candidates_share_an_id() {
+        // One export containing the same conversation twice: advising
+        // `--conversation ID` would send the user in a circle.
+        let err = SelectError::Ambiguous {
+            query: "q".to_string(),
+            candidates: vec![
+                candidate("same-id", "Older copy"),
+                candidate("same-id", "Newer copy"),
+            ],
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("share a conversation id"), "{rendered}");
+        assert!(rendered.contains("--title"), "{rendered}");
+        assert!(!rendered.contains("--conversation ID"), "{rendered}");
+    }
+
+    #[test]
+    fn candidate_titles_are_sanitized_before_display() {
+        let escape = char::from_u32(27).unwrap_or('?');
+        let err = SelectError::Ambiguous {
+            query: "q".to_string(),
+            candidates: vec![
+                candidate("a", &format!("hostile{escape}[31m")),
+                candidate("b", "plain"),
+            ],
+        };
+        assert!(!err.to_string().contains(escape));
+    }
+
+    #[test]
+    fn output_exists_error_names_the_escape_hatch() {
+        let err = Error::OutputExists {
+            path: std::path::PathBuf::from("handoff/context.md"),
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("handoff/context.md"));
+        assert!(rendered.contains("--force"));
+    }
 }
 
 /// One candidate rendered when a selector is ambiguous.
