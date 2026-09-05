@@ -1,3 +1,0 @@
-{"t":0,"agent":"acontex","agent_type":"context-engineer","event":"agent_stop","success":true,"synthetic":true,"telemetry_status":"unmatched_stop","reason":"SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."}
-{"t":0,"agent":"acontex","agent_type":"context-engineer","event":"agent_start","parent_mode":"none"}
-{"t":0,"agent":"areview","agent_type":"reviewer","event":"agent_start","parent_mode":"none"}

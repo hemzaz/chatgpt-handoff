@@ -12,3 +12,6 @@
 # in the repo root while poking at the tool.
 *.zip
 /conversations.json
+
+# Editor/agent tooling session state — never belongs in the repo.
+/.omc/
