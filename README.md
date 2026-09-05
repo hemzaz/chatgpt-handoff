@@ -39,22 +39,33 @@ extension, so a renamed file still works.
 
 ```bash
 # List every conversation in an export (accepts the .zip ChatGPT emails you,
-# or a conversations.json you've already unzipped)
+# or a conversations.json you've already unzipped), newest-updated first
 chatgpt-handoff list ~/Downloads/chatgpt-export.zip
 
-# Fuzzy-search conversation titles (and, optionally, message bodies) —
-# Hebrew, Arabic, and other non-Latin scripts work the same as ASCII
+# Fuzzy-search conversation titles and ids — add --content to also search
+# message bodies (slower: it walks every node). Hebrew, Arabic, and other
+# non-Latin scripts work the same as ASCII
 chatgpt-handoff find conversations.json "iboga"
 
-# Show one conversation, selected by an exact or fuzzy title
-chatgpt-handoff show conversations.json --title "iboga"
+# Show one conversation, selected by an exact or fuzzy title — non-ASCII
+# titles work the same as any other
+chatgpt-handoff show conversations.json --title "איבוגה גמילה מאופיאטים"
 
 # Render just the active branch as a standalone archival Markdown transcript
 chatgpt-handoff transcript conversations.json --conversation conv-linear-0001
 
-# The main workflow: reconstruct the active branch and write both
-# transcript.md and context.md for one conversation
+# The main workflow: reconstruct the active branch and write
+# transcript.md + context.md + metadata.json for one conversation
 chatgpt-handoff extract conversations.json --title "Rust CLI design notes"
+
+# Get the same handoff-writing prompt extract's `--context-mode prompt`
+# generates, printed to stdout instead of run through the deterministic
+# generator — paste it into any LLM alongside transcript.md
+chatgpt-handoff prompt conversations.json --conversation conv-linear-0001
+
+# See the raw graph: which nodes are on the active branch and which were
+# abandoned regenerations
+chatgpt-handoff inspect conversations.json --conversation conv-branch-0002 --nodes
 ```
 
 A successful `extract` writes its files atomically into an output directory
@@ -85,6 +96,49 @@ machine-readable `metadata.json` sidecar (see
 `--context-mode prompt` also writes `summarization-prompt.md`, and `--raw`
 also writes `raw-conversation.json`.
 
+## Commands and flags
+
+Eight subcommands: `list`, `find`, `show`, `transcript`, `extract`, `prompt`,
+`inspect`, and `help`. Every flag below is checked against the binary's own
+`--help` output, not guessed.
+
+**Selecting a conversation.** `show`, `transcript`, `extract`, `prompt`, and
+`inspect` all take an optional positional query (a fuzzy id or title match)
+or the explicit `--conversation <ID>` / `--title <TITLE>` flags. When more
+than one conversation matches, the command lists the candidates and exits
+rather than guessing — add `--pick` to resolve that ambiguity interactively
+from the candidate list instead. `--pick` requires a real terminal and is
+never on by default, so every command stays usable unattended in a script.
+
+Options that matter enough to call out individually, beyond what's already
+covered above and in [Context generation](#context-generation):
+
+| Command | Flag | What it does | Default |
+|---|---|---|---|
+| `list` | `--sort <updated\|created\|title>` | Sort order | `updated` |
+| `list` | `--reverse` | Reverse the sort order | off |
+| `list` | `--limit <N>` | Show at most N conversations | unlimited |
+| `find` | `--content` | Also fuzzy-search message bodies, not just titles/ids (slower — walks every node) | off |
+| `find` | `--limit <N>` | Maximum matches returned | 20 |
+| `extract` | `-o`, `--output <DIR>` | Directory to create the handoff package in | `./handoff` |
+| `inspect` | `--nodes` | List every node in the graph, not just the summary — see below | off |
+
+`transcript`, `extract`, and `prompt` additionally share a set of
+message-inclusion flags. By default only `user` and `assistant` messages are
+rendered — the conversational core — and each flag below opts in exactly one
+more category: `--include-system`, `--include-developer`, `--include-tools`
+(tool calls and their output), and `--include-hidden` (messages ChatGPT
+itself hides from the UI).
+
+Cross-cutting flags available on most or all commands:
+
+| Flag | What it does | Default |
+|---|---|---|
+| `--json` | Emit machine-readable JSON instead of human-readable text (`list`, `find`, `show`, `extract`, `inspect`) | off |
+| `--local-time` | Render timestamps in the local timezone instead of UTC | UTC |
+| `--max-unpacked-bytes <N>` | Zip-bomb guard — see [Security notes](#security-notes) | 536870912 (512 MiB) |
+| `-v`, `-vv` | Increase logging verbosity (info / debug) to stderr | off |
+
 ## Active-branch semantics
 
 A ChatGPT conversation isn't a list of messages — it's a tree. Every time you
@@ -101,6 +155,36 @@ reachable path through the graph — whenever `current_node` is missing,
 dangling, or resolves to a branch with no messages on it. When that fallback
 fires, it's recorded as a warning rather than silently swallowed, so you can
 tell when the tool had to guess.
+
+**See it for yourself** with `inspect --nodes`. This fixture's
+`conv-branch-0002` has a regenerated answer: one assistant reply was kept,
+the other abandoned. Real output:
+
+```
+$ chatgpt-handoff inspect tests/fixtures/sample-export.json --conversation conv-branch-0002 --nodes
+Conversation ID: conv-branch-0002
+Title:           Regenerated answer demo
+current_node:    node-04-assistant-kept
+Roots:           node-00-root
+Branch strategy: current-node
+Branch nodes:    5 of 6 total
+Branch points:   1 (1 alternative branch(es))
+Damage:          0 broken parent(s), 0 unreachable node(s)
+Warnings:        none
+
+NODE                                   ROLE          CHILD    CHARS  ON BRANCH
+node-00-root                           -                 1        0  yes
+node-01-user                           user              2       86  yes
+node-03-assistant-kept                 assistant         1      170  yes
+node-04-user-kept                      user              1       82  yes
+node-04-assistant-kept                 assistant         0      125  yes
+node-02-assistant-abandoned            assistant         0       99
+```
+
+`node-02-assistant-abandoned` — the first, discarded regeneration — is listed
+so you can see the graph damage was found and accounted for, but its `ON
+BRANCH` column is blank: it's counted in `Branch nodes: 5 of 6 total` and the
+one `Branch point`, but it will never appear in `transcript.md` or `context.md`.
 
 ## Context generation
 
@@ -136,6 +220,37 @@ There are two generation modes, selected with `--context-mode`:
   `summarization-prompt.md` containing the transcript plus instructions for
   producing a higher-quality `context.md`. Paste that file into any LLM (this
   one or another) to get a better-written handoff document back.
+
+How much of the transcript's tail is preserved verbatim in that "Recent
+Conversation" section is controlled by two flags on `extract` and `prompt`:
+`--recent-messages <N>` (default `30`) caps it by message count, and
+`--recent-chars <N>` (no default — opt-in) additionally caps it by character
+count. **When both are given, the stricter one wins** — whichever limit would
+cut the tail shorter is the one that applies. At least one message is always
+kept even if it alone exceeds `--recent-chars`, since a truncated final
+message is worse than an oversized one.
+
+### `prompt` (the command)
+
+You don't have to run `extract` to get the summarization prompt — the
+`prompt` subcommand prints exactly that file to stdout (or `--output FILE`)
+on its own, so it's the fast path when all you want is a better `context.md`
+via your own LLM of choice, without producing a `transcript.md`/`metadata.json`
+you don't need yet. Real (truncated) output:
+
+```
+$ chatgpt-handoff prompt tests/fixtures/sample-export.json --conversation conv-linear-0001
+# Task
+
+You are given `transcript.md`: the complete history of a ChatGPT conversation that hit its length limit. Produce a single Markdown document, `context.md`, that lets a model with no memory of this conversation **continue** it.
+```
+
+It continues with a *Source conversation* block giving the title, id,
+created/updated timestamps, and size (for this fixture: `Rust CLI design
+notes`, `conv-linear-0001`, 8 messages / ~191 words), then ten numbered rules
+(don't summarize away specifics, distinguish fact from speculation, preserve
+open questions verbatim, etc.), and ends by requiring the same 14 headings,
+in the same order, listed above.
 
 ### `metadata.json`
 

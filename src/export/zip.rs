@@ -35,17 +35,24 @@ use crate::text;
 ///
 /// # What this actually bounds
 ///
-/// **Not** peak memory, and the gap is large. Parsing goes through
-/// `Vec<serde_json::Value>`, which is far bigger than the text it came from:
-/// measured at roughly **14x** — a 34 MB `conversations.json` peaks around
-/// 490 MB resident. So this 512 MiB limit admits something on the order of
-/// **7 GB** of RSS, and on a machine with less than that a malicious (or
-/// merely enormous) export is refused by the OOM killer rather than by us.
+/// Input size — **not** peak memory, and the gap is large. Parsing goes
+/// through `Vec<serde_json::Value>`, which is far bigger than the text it came
+/// from. Measured on release builds against 34 MB fixtures:
 ///
-/// The number is kept deliberately generous so that real exports load; it is
-/// a bound on *input size*, not a memory safety net. Anyone deploying this
-/// against untrusted input should lower `--max-unpacked-bytes` to roughly a
-/// fourteenth of the memory they are willing to spend.
+/// | Input shape | Peak RSS | Amplification |
+/// |---|---|---|
+/// | 12 long messages per conversation | 300 MB | 8.6x |
+/// | 60 short messages per conversation | 644 MB | 18.9x |
+///
+/// The ratio tracks the *number* of JSON nodes, not the byte count, so a
+/// chatty export costs more than a verbose one of the same size. Taking ~19x
+/// as the working worst case, this 512 MiB limit admits on the order of
+/// **10 GB** of RSS: on a smaller machine a malicious or merely enormous
+/// export is stopped by the OOM killer, not by us.
+///
+/// The default is kept generous so that real exports load. Anyone pointing
+/// this at untrusted input should set `--max-unpacked-bytes` to roughly a
+/// twentieth of the memory they are willing to spend.
 ///
 /// Peak is higher still on the `extract --raw` path, which reads and parses
 /// the document a second time to recover fields the domain model drops.
