@@ -251,7 +251,11 @@ impl ZipSource {
         let declared = entry.size();
         if declared > limit {
             // Case 1: the header was honest and the entry really is too big.
-            return Err(super::size_refusal(oversize_label(name), declared, limit));
+            return Err(super::archive_entry_too_large(
+                display_name(name),
+                declared,
+                limit,
+            ));
         }
 
         let capacity = declared.min(MAX_PREALLOCATED_ENTRY_BYTES) as usize;
@@ -269,9 +273,9 @@ impl ZipSource {
             // Case 2: the header lied. Say so — "the entry is too big" and
             // "the entry claimed to be small and was not" call for different
             // responses from whoever is holding the file.
-            return Err(super::size_refusal(
-                lying_header_label(name, declared),
-                bytes.len() as u64,
+            return Err(super::archive_entry_size_mismatch(
+                display_name(name),
+                declared,
                 limit,
             ));
         }
@@ -333,26 +337,6 @@ impl Scan {
             self.warnings.push(message);
         }
     }
-}
-
-/// Label for "the header was honest and this entry is simply too big".
-fn oversize_label(name: &str) -> String {
-    display_name(name)
-}
-
-/// Label for "the header understated the entry and the stream ran past the
-/// limit".
-///
-/// The two refusals share one error type, so the label is what tells them
-/// apart — and which one fired is exactly what someone holding a rejected
-/// export needs to know: an honest oversize is fixed by raising the limit, a
-/// lying header means the archive is malicious or corrupt and raising the
-/// limit is the wrong move.
-fn lying_header_label(name: &str, declared: u64) -> String {
-    format!(
-        "{} (header understated the entry: it claimed only {declared} bytes)",
-        display_name(name)
-    )
 }
 
 /// Render an entry name for human consumption.
@@ -830,19 +814,40 @@ mod tests {
 
     #[test]
     fn the_two_size_refusals_are_distinguishable() {
-        let honest = oversize_label("conversations.json");
-        let lying = lying_header_label("conversations.json", 10);
+        // The distinction now lives in the error type rather than in a label
+        // string, so a caller can match on it instead of grepping a message.
+        let honest = super::super::archive_entry_too_large("conversations.json".into(), 900, 100);
+        let lying = super::super::archive_entry_size_mismatch("conversations.json".into(), 10, 100);
 
-        assert_eq!(honest, "conversations.json");
+        assert!(matches!(honest, Error::ArchiveEntryTooLarge { .. }));
+        assert!(matches!(lying, Error::ArchiveEntrySizeMismatch { .. }));
+
+        let honest_text = honest.to_string();
+        let lying_text = lying.to_string();
         assert_ne!(
-            honest, lying,
+            honest_text, lying_text,
             "a user must be able to tell which check refused the entry"
         );
-        assert!(lying.contains("header understated"), "{lying}");
-        assert!(lying.contains("claimed only 10 bytes"), "{lying}");
+        // An honest oversize is fixed by raising the limit; a lying header is
+        // not, so only one of them should suggest that.
+        assert!(
+            honest_text.contains("--max-unpacked-bytes"),
+            "{honest_text}"
+        );
+        assert!(!lying_text.contains("--max-unpacked-bytes"), "{lying_text}");
+        assert!(
+            lying_text.contains("declared only 10 bytes"),
+            "{lying_text}"
+        );
+        assert!(lying_text.contains("corrupt or hostile"), "{lying_text}");
+    }
 
-        // The label is still attacker-controlled text on a terminal.
-        assert!(!lying_header_label("evil\u{202e}.json", 1).contains('\u{202e}'));
+    #[test]
+    fn refusal_messages_never_carry_terminal_control_characters() {
+        let hostile = display_name("evil\u{202e}.json");
+        assert!(!hostile.contains('\u{202e}'));
+        let rendered = super::super::archive_entry_size_mismatch(hostile, 1, 100).to_string();
+        assert!(!rendered.contains('\u{202e}'), "{rendered}");
     }
 
     #[test]

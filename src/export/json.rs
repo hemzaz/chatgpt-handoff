@@ -76,7 +76,7 @@ impl JsonSource {
 
         let reported = file.metadata().map(|meta| meta.len()).unwrap_or(0);
         if reported > limit {
-            return Err(super::size_refusal(self.describe(), reported, limit));
+            return Err(super::input_too_large(&self.path, reported, limit));
         }
 
         let mut bytes = Vec::with_capacity(reported.min(MAX_PREALLOCATED_READ_BYTES) as usize);
@@ -85,11 +85,10 @@ impl JsonSource {
             .map_err(|e| Error::io(&self.path, e))?;
 
         if bytes.len() as u64 > limit {
-            return Err(super::size_refusal(
-                format!(
-                    "{} (grew past the {reported} bytes it reported)",
-                    self.describe()
-                ),
+            // The file grew (or the filesystem lied) between the stat and the
+            // read. Same refusal, and the reported size is now irrelevant.
+            return Err(super::input_too_large(
+                &self.path,
                 bytes.len() as u64,
                 limit,
             ));
@@ -539,14 +538,14 @@ mod tests {
             },
         );
         match source.load().expect_err("over the limit") {
-            Error::ArchiveEntryTooLarge {
-                entry,
-                declared,
+            Error::InputTooLarge {
+                path: p,
+                size,
                 limit,
             } => {
-                assert_eq!(entry, path.display().to_string());
+                assert_eq!(p, path);
                 assert_eq!(limit, 64);
-                assert_eq!(declared, body.len() as u64);
+                assert_eq!(size, body.len() as u64);
             }
             other => panic!("expected a size refusal, got {other:?}"),
         }

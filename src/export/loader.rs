@@ -323,13 +323,24 @@ mod tests {
         let tight = LoadOptions {
             max_unpacked_bytes: 64,
         };
-        for path in [&loose, &zipped] {
-            assert!(
-                matches!(load(path, &tight), Err(Error::ArchiveEntryTooLarge { .. })),
-                "{} must respect --max-unpacked-bytes",
-                path.display()
-            );
-        }
+        // Both paths refuse, but with the variant that names what was refused:
+        // a loose file is not an archive entry and must not say it is.
+        assert!(
+            matches!(load(&loose, &tight), Err(Error::InputTooLarge { .. })),
+            "loose json must respect --max-unpacked-bytes"
+        );
+        assert!(
+            matches!(
+                load(&zipped, &tight),
+                Err(Error::ArchiveEntryTooLarge { .. })
+            ),
+            "archive entries must respect --max-unpacked-bytes"
+        );
+        let rendered = load(&loose, &tight).expect_err("refused").to_string();
+        assert!(
+            !rendered.contains("archive"),
+            "a loose file must not be described as an archive entry: {rendered}"
+        );
     }
 
     #[test]

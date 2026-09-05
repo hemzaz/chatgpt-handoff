@@ -53,10 +53,36 @@ pub enum Error {
     NoConversationsInArchive { path: PathBuf },
 
     #[error(
+        "{path} is {size} bytes, over the {limit} byte safety limit \
+         (raise it with --max-unpacked-bytes)"
+    )]
+    InputTooLarge {
+        path: PathBuf,
+        size: u64,
+        limit: u64,
+    },
+
+    #[error(
         "archive entry `{entry}` declares {declared} bytes uncompressed, \
          over the {limit} byte safety limit (raise it with --max-unpacked-bytes)"
     )]
     ArchiveEntryTooLarge {
+        entry: String,
+        declared: u64,
+        limit: u64,
+    },
+
+    /// The declared size passed the check but the stream did not.
+    ///
+    /// Kept distinct from [`Error::ArchiveEntryTooLarge`] because the two call
+    /// for opposite responses: an honest oversize is fixed by raising the
+    /// limit, while a header that understated its entry means the archive is
+    /// corrupt or hostile and raising the limit is exactly the wrong move.
+    #[error(
+        "archive entry `{entry}` declared only {declared} bytes but delivered \
+         more than the {limit} byte safety limit; the archive is corrupt or hostile"
+    )]
+    ArchiveEntrySizeMismatch {
         entry: String,
         declared: u64,
         limit: u64,
