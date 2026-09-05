@@ -114,7 +114,19 @@ pub fn sanitize_filename(input: &str) -> String {
             c => c,
         })
         .collect();
-    let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    // Collapse the runs of separators that path-like input produces, then trim
+    // the leading/trailing punctuation that would otherwise leave artefacts
+    // such as `-..-etc-passwd` behind.
+    let mut collapsed = String::with_capacity(cleaned.len());
+    for ch in cleaned.chars() {
+        if ch == '-' && collapsed.ends_with('-') {
+            continue;
+        }
+        collapsed.push(ch);
+    }
+    let cleaned = collapsed
+        .trim_matches(|c: char| c == '.' || c == '-' || c.is_whitespace())
+        .to_string();
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
         "untitled".to_string()
     } else {
@@ -165,9 +177,22 @@ mod tests {
     #[test]
     fn filenames_are_single_components() {
         assert_eq!(sanitize_filename("../../etc/passwd"), "etc-passwd");
+        assert_eq!(sanitize_filename("/etc/shadow"), "etc-shadow");
         assert_eq!(sanitize_filename("  ..  "), "untitled");
         assert_eq!(sanitize_filename(""), "untitled");
+        assert_eq!(sanitize_filename("."), "untitled");
+        assert_eq!(sanitize_filename("context.md"), "context.md");
+        assert_eq!(sanitize_filename("a/b\\c:d"), "a-b-c-d");
         assert!(!sanitize_filename("a/b\\c:d").contains(['/', '\\', ':']));
+        // A sanitized name is always exactly one path component.
+        for hostile in ["../../etc/passwd", "a/b", "\u{0}x", "..", "  "] {
+            let safe = sanitize_filename(hostile);
+            assert_eq!(
+                std::path::Path::new(&safe).components().count(),
+                1,
+                "{hostile:?}"
+            );
+        }
     }
 
     #[test]

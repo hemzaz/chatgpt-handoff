@@ -619,7 +619,15 @@ fn purpose_section(messages: &[BranchMessage<'_>]) -> String {
 fn background_section(messages: &[BranchMessage<'_>], selection: &RecentSelection) -> String {
     let mut blocks: Vec<String> = Vec::new();
 
-    let early: Vec<String> = messages
+    // Only look before the verbatim tail: repeating a message that appears in
+    // full under `Recent Conversation` wastes the reader's budget. When the
+    // tail covers everything, fall back to the whole branch so the section is
+    // never misleadingly empty.
+    let head = match messages.get(..selection.start_index) {
+        Some(head) if !head.is_empty() => head,
+        _ => messages,
+    };
+    let early: Vec<String> = head
         .iter()
         .filter(|entry| *entry.message.role() == Role::User)
         .map(|entry| clean(&entry.message.content.plain_text()))
@@ -812,6 +820,7 @@ fn conclusions_section(messages: &[BranchMessage<'_>]) -> String {
     let midpoint = messages.len() / 2;
     let candidates = role_sentences(messages, |role| *role == Role::Assistant)
         .into_iter()
+        .filter(|(_, sentence)| !sentence.contains('?'))
         .filter(|(_, sentence)| contains_any(&fold(sentence), CONCLUSION_CUES));
 
     // Stable partition: later-half hits first, each half in chronological
@@ -930,6 +939,9 @@ fn cue_bullets(
 ) -> String {
     let candidates = role_sentences(messages, role_pred)
         .into_iter()
+        // A question is never a stated preference, decision or rejection, even
+        // when it happens to contain the cue word ("what should we do?").
+        .filter(|(_, sentence)| !sentence.contains('?'))
         .filter(|(_, sentence)| contains_any(&fold(sentence), cues))
         .map(|(_, sentence)| clipped(&sentence, SENTENCE_CHARS));
     bullets(&dedup_capped(candidates, cap))
@@ -1464,6 +1476,66 @@ mod tests {
     }
 
     #[test]
+    fn background_quotes_only_messages_outside_the_verbatim_tail() {
+        let messages = english();
+        let entries = branch(&messages);
+        let selection = select_recent(&entries, 3, None);
+        let document = build_document(
+            &conversation(),
+            &entries,
+            &selection,
+            "tail",
+            &ContextOptions::default(),
+        );
+        let body = body_of(&document, "Important Background");
+        // The trailing question lives in the verbatim tail; repeating it here
+        // would spend the reader's budget on a duplicate.
+        assert!(!body.contains("What should we do about the nightly cron"));
+        assert!(body.contains("I prefer Parquet over CSV."));
+    }
+
+    #[test]
+    fn background_falls_back_to_the_whole_branch_when_the_tail_covers_it() {
+        let messages = english();
+        let entries = branch(&messages);
+        let selection = select_recent(&entries, 99, None);
+        let document = build_document(
+            &conversation(),
+            &entries,
+            &selection,
+            "tail",
+            &ContextOptions::default(),
+        );
+        // Never a misleading "none identified" just because the tail is long.
+        assert!(!body_of(&document, "Important Background").is_empty());
+    }
+
+    #[test]
+    fn a_question_is_never_a_preference_decision_or_rejection() {
+        let messages = script(&[
+            (Role::User, "Set it up."),
+            (
+                Role::Assistant,
+                "What should we do next? Should we instead of that use a queue? \
+                 Have we decided on Parquet?",
+            ),
+            (Role::User, "Not sure."),
+        ]);
+        let document = document_for(&messages);
+        for heading in [
+            "User Preferences and Constraints",
+            "Decisions Already Made",
+            "Rejected / Superseded Approaches",
+            "Key Conclusions",
+        ] {
+            assert!(
+                !body_of(&document, heading).contains('?'),
+                "a question leaked into {heading}"
+            );
+        }
+    }
+
+    #[test]
     fn background_has_no_digest_when_the_tail_covers_everything() {
         let messages = english();
         let entries = branch(&messages);
@@ -1708,14 +1780,5 @@ mod tests {
         assert!(contains_any(&fold("We DON’T want that"), PREFERENCE_CUES));
         assert!(contains_any(&fold("we Decided already"), DECISION_CUES));
         assert!(!contains_any(&fold("nothing here"), DECISION_CUES));
-    }
-}
-
-#[cfg(test)]
-mod scratch_dump {
-    #[test]
-    fn dump() {
-        let messages = super::tests::english();
-        println!("{}", super::tests::document_for(&messages).render_markdown());
     }
 }

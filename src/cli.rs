@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
-use crate::context::{self, ContextGenerator, ContextMode, ContextOptions};
+use crate::context::{self, ContextMode, ContextOptions};
 use crate::error::{AmbiguousCandidate, SelectError};
 use crate::export::{self, LoadOptions};
 use crate::graph::{self, ConversationStats};

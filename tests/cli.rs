@@ -77,8 +77,8 @@ fn list_json_stdout_is_pure_json() {
         .expect("run");
     assert!(output.status.success());
 
-    let parsed: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("stdout must be parseable JSON and nothing else");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout must be parseable JSON and nothing else");
     let conversations = parsed["conversations"]
         .as_array()
         .expect("conversations array");
@@ -147,7 +147,10 @@ fn find_matches_a_hebrew_title() {
         .expect("run");
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     let matches = parsed["matches"].as_array().expect("matches array");
-    assert!(!matches.is_empty(), "Hebrew query must match the Hebrew title");
+    assert!(
+        !matches.is_empty(),
+        "Hebrew query must match the Hebrew title"
+    );
     assert_eq!(matches[0]["id"], "conv-hebrew-0003");
 }
 
@@ -172,7 +175,11 @@ fn show_reports_branch_statistics() {
         .args(["--conversation", "conv-linear-0001", "--json"])
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(parsed["conversation_id"], "conv-linear-0001");
@@ -212,7 +219,11 @@ fn transcript_has_the_documented_shape() {
         .args(["--conversation", "conv-linear-0001"])
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let text = stdout_of(&output);
     assert!(text.starts_with("# "), "must open with the title heading");
@@ -238,7 +249,11 @@ fn transcript_excludes_abandoned_regenerations() {
         .args(["--conversation", "conv-branch-0002"])
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let text = stdout_of(&output);
     assert!(
@@ -261,7 +276,10 @@ fn transcript_preserves_hebrew_exactly() {
         .expect("run");
     let text = stdout_of(&output);
     assert!(text.contains("איבוגה"));
-    assert!(std::str::from_utf8(&output.stdout).is_ok(), "output must be valid UTF-8");
+    assert!(
+        std::str::from_utf8(&output.stdout).is_ok(),
+        "output must be valid UTF-8"
+    );
 }
 
 #[test]
@@ -315,7 +333,11 @@ fn extract_creates_the_handoff_package() {
         .arg(&out)
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     for name in ["context.md", "transcript.md", "metadata.json"] {
         assert!(out.join(name).exists(), "{name} must be created");
@@ -428,11 +450,13 @@ fn extract_prompt_mode_adds_the_summarization_prompt() {
         .assert()
         .success();
 
-    let prompt =
-        std::fs::read_to_string(out.join("summarization-prompt.md")).expect("prompt file");
+    let prompt = std::fs::read_to_string(out.join("summarization-prompt.md")).expect("prompt file");
     assert!(prompt.contains("Continuation Instructions"));
     assert!(prompt.to_lowercase().contains("transcript"));
-    assert!(out.join("context.md").exists(), "context.md is still produced");
+    assert!(
+        out.join("context.md").exists(),
+        "context.md is still produced"
+    );
 }
 
 #[test]
@@ -442,7 +466,12 @@ fn extract_honours_the_recent_message_budget() {
     let output = cli()
         .args(["extract"])
         .arg(fixture("sample-export.json"))
-        .args(["--conversation", "conv-linear-0001", "--recent-messages", "2"])
+        .args([
+            "--conversation",
+            "conv-linear-0001",
+            "--recent-messages",
+            "2",
+        ])
         .arg("--output")
         .arg(&out)
         .arg("--json")
@@ -481,9 +510,10 @@ fn extract_raw_writes_the_untouched_source_json() {
         .assert()
         .success();
 
-    let raw: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(out.join("raw-conversation.json")).expect("read"))
-            .expect("valid JSON");
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.join("raw-conversation.json")).expect("read"),
+    )
+    .expect("valid JSON");
     assert!(raw.get("mapping").is_some(), "raw JSON keeps the mapping");
 }
 
@@ -497,7 +527,11 @@ fn prompt_command_emits_a_vendor_neutral_prompt() {
         .args(["--conversation", "conv-linear-0001"])
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let text = stdout_of(&output).to_lowercase();
     for phrase in [
@@ -522,7 +556,11 @@ fn inspect_reports_the_graph_and_lists_nodes() {
         .args(["--conversation", "conv-branch-0002", "--nodes", "--json"])
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     let nodes = parsed["nodes"].as_array().expect("nodes array");
@@ -583,7 +621,11 @@ fn a_malformed_graph_still_produces_output_and_never_panics() {
         .arg(fixture("malformed-export.json"))
         .output()
         .expect("run");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     let conversations = parsed["conversations"].as_array().expect("array");
