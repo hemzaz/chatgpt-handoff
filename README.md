@@ -12,13 +12,9 @@ abandoned regeneration attempt), and a compact `context.md` you paste into the
 first message of a *new* conversation so the model can pick up where the old
 one left off instead of restarting from zero.
 
-> **Project status:** the domain model, export parsing (JSON and zip), active-
-> branch reconstruction, fuzzy search, selector resolution, and Markdown
-> transcript rendering are implemented and tested. Context-document generation
-> (`context.md`) and the command-line interface itself are still under active
-> development. The usage below describes the intended shape of the CLI; if
-> you're reading this before a tagged release, check that the binary
-> implements the command you want before scripting against it.
+> **Project status:** pre-1.0 and not yet published to crates.io, but the CLI
+> below is real and working — every command and flag in this README has been
+> checked against the binary's own `--help` output.
 
 ## Install
 
@@ -62,17 +58,32 @@ chatgpt-handoff extract conversations.json --title "Rust CLI design notes"
 ```
 
 A successful `extract` writes its files atomically into an output directory
-(nothing is overwritten unless you pass `--force`) and reports what it wrote:
+(`./handoff` by default; nothing is overwritten unless you pass `--force`)
+and reports what it wrote:
 
 ```
 $ chatgpt-handoff extract conversations.json --title "Rust CLI design notes"
-wrote 2 files to handoff/conv-linear-0001/
-  handoff/conv-linear-0001/transcript.md
-  handoff/conv-linear-0001/context.md
+Created handoff package:
+
+  handoff/context.md
+  handoff/transcript.md
+  handoff/metadata.json
+
+Conversation:
+  Rust CLI design notes
+
+Active branch:
+  8 messages
+
+Recent context preserved:
+  8 messages
 ```
 
-`prompt` mode additionally writes a `summarization-prompt.md` alongside the
-other two files — see [Context generation](#context-generation) below.
+Every `extract` run writes three files — `context.md`, `transcript.md`, and a
+machine-readable `metadata.json` sidecar (see
+[Context generation](#context-generation) below). Two flags add more:
+`--context-mode prompt` also writes `summarization-prompt.md`, and `--raw`
+also writes `raw-conversation.json`.
 
 ## Active-branch semantics
 
@@ -96,28 +107,24 @@ tell when the tool had to guess.
 `context.md` is a fixed 14-section handoff document, generated from the
 reconstructed active branch. Every section always appears — a section with
 nothing found in it says so explicitly, so a model reading the document can
-tell "nothing here" apart from "never considered":
+tell "nothing here" apart from "never considered". The 14 sections, in order:
 
-```
-# Conversation Handoff
+1. Conversation
+2. Purpose
+3. Important Background
+4. Established Facts
+5. User Preferences and Constraints
+6. Decisions Already Made
+7. Terminology and Entities
+8. Important Technical Details
+9. Key Conclusions
+10. Rejected / Superseded Approaches
+11. Current State
+12. Open Questions
+13. Recent Conversation
+14. Continuation Instructions
 
-## Conversation
-## Purpose
-## Important Background
-## Established Facts
-## User Preferences and Constraints
-## Decisions Already Made
-## Terminology and Entities
-## Important Technical Details
-## Key Conclusions
-## Rejected / Superseded Approaches
-## Current State
-## Open Questions
-## Recent Conversation
-## Continuation Instructions
-```
-
-There are two generation modes:
+There are two generation modes, selected with `--context-mode`:
 
 - **`deterministic`** (the default) — local, offline heuristics only: sentence
   and keyword extraction, no network calls, no API key, no LLM involved. This
@@ -129,6 +136,53 @@ There are two generation modes:
   `summarization-prompt.md` containing the transcript plus instructions for
   producing a higher-quality `context.md`. Paste that file into any LLM (this
   one or another) to get a better-written handoff document back.
+
+### `metadata.json`
+
+Every `extract` run also writes a machine-readable `metadata.json` alongside
+`context.md` and `transcript.md` — provenance and statistics for scripts or
+other tools consuming the package, without having to re-parse the Markdown.
+Real output for one of the fixtures in this repository
+(`chatgpt-handoff extract tests/fixtures/sample-export.json --conversation conv-linear-0001 --output /tmp/demo --force`):
+
+```json
+{
+  "active_branch_messages": 8,
+  "alternative_branches": 0,
+  "approx_characters": 1195,
+  "approx_words": 191,
+  "assistant_messages": 4,
+  "branch_strategy": "current-node",
+  "context_mode": "deterministic",
+  "conversation_id": "conv-linear-0001",
+  "created_at": "2025-08-12T12:00:00Z",
+  "generated_by": "chatgpt-handoff 0.1.0",
+  "recent_messages_preserved": 8,
+  "source": "tests/fixtures/sample-export.json",
+  "title": "Rust CLI design notes",
+  "total_nodes": 9,
+  "updated_at": "2025-08-12T13:00:00Z",
+  "user_messages": 4,
+  "warnings": []
+}
+```
+
+`total_nodes` counts every node in the conversation's graph (including
+message-less scaffolding and any abandoned regenerations), while the
+`*_messages` counts describe only the reconstructed active branch — so a
+non-zero gap between them, or a non-zero `alternative_branches`, tells a
+consumer that other branches existed even though only one was rendered.
+`branch_strategy` records which strategy actually produced the branch
+(`current-node` normally, `longest-path` after a fallback — see
+[Active-branch semantics](#active-branch-semantics)), and `warnings` surfaces
+any recoverable graph damage found along the way.
+
+### `--raw`
+
+Pass `--raw` to also write `raw-conversation.json`: the original, unmodified
+JSON object for that conversation straight out of the source export,
+including any fields the tolerant domain model discards. Useful when you need
+something `chatgpt-handoff` itself doesn't model yet.
 
 ## Privacy
 
