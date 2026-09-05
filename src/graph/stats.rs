@@ -6,7 +6,7 @@
 //! text figures describe only the branch that was actually reconstructed — the
 //! text a reader will see.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
@@ -38,22 +38,36 @@ pub struct ConversationStats {
     /// Graph nodes on the branch, including message-less ones such as the
     /// synthetic root, so this is always >= `active_branch_messages`.
     pub branch_depth: usize,
-    /// Nodes with more than one distinct child present in the mapping: the
-    /// points where the user regenerated or edited.
+    /// Nodes with more than one distinct child: the points where the user
+    /// regenerated or edited.
+    ///
+    /// A child counts if *either* edge records it — the node's own `children`
+    /// list, or another node naming this one as its `parent`. Reading only
+    /// `children` reported "0 branch points" for exports that genuinely forked
+    /// but ship empty `children` lists, which is a false claim about the shape
+    /// of the conversation, and shape is the question `inspect` exists to
+    /// answer. The two edges are merged into a set, so a fork both of them
+    /// record is one fork, not two.
     pub branch_points: usize,
     /// How many alternate paths those forks created, i.e. the sum of
     /// `children - 1` over every branch point.
     pub alternative_branches: usize,
     /// Nodes whose `parent` names an id the mapping does not contain.
     pub broken_parents: usize,
-    /// Nodes stranded outside the branch: their `parent` chain never reaches a
-    /// genuine root, so they are attached to no beginning the conversation has.
+    /// Nodes that *neither* edge connects to a beginning of the conversation:
+    /// not reachable from a true root by following `children`, and with a
+    /// `parent` chain that never terminates at a true root either.
     ///
-    /// Measured on `parent`, the edge branches are reconstructed from, and
-    /// nodes on the returned branch are excluded — content you are being shown
-    /// is by definition not content you are missing. Damage to the branch
-    /// itself is reported by `broken_parents` and the branch warnings instead,
-    /// so nothing is hidden by that exclusion.
+    /// Requiring both is what makes this honest. Judging on `children` alone
+    /// called eight nodes stranded in an export whose `parent` chain was
+    /// completely intact, and simultaneously missed a real orphan whose parent
+    /// id was absent from the mapping — wrong in both directions at once.
+    ///
+    /// Nodes on the returned branch are excluded on top of that, so content
+    /// being rendered can never also be reported as content the user is
+    /// missing. Damage to the branch itself is already reported by
+    /// `broken_parents` and the branch warnings, so the exclusion
+    /// de-duplicates rather than hides.
     pub unreachable_nodes: usize,
 }
 
@@ -74,7 +88,6 @@ impl ConversationStats {
             ..ConversationStats::default()
         };
 
-        let mut distinct_children: HashSet<&str> = HashSet::new();
         for node in conversation.mapping.values() {
             if node.has_message() {
                 stats.nodes_with_messages += 1;
@@ -86,24 +99,25 @@ impl ConversationStats {
             {
                 stats.broken_parents += 1;
             }
+        }
 
-            distinct_children.clear();
-            distinct_children.extend(
-                node.children
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|child| conversation.mapping.contains_key(*child)),
-            );
-            if distinct_children.len() > 1 {
+        for children in merged_children(conversation).values() {
+            if children.len() > 1 {
                 stats.branch_points += 1;
-                stats.alternative_branches += distinct_children.len() - 1;
+                stats.alternative_branches += children.len() - 1;
             }
         }
 
         let on_branch: HashSet<&str> = branch.node_ids.iter().map(String::as_str).collect();
-        stats.unreachable_nodes = branch::ungrounded_node_ids(conversation)
-            .into_iter()
-            .filter(|id| !on_branch.contains(id))
+        let ungrounded = branch::ungrounded_node_ids(conversation);
+        let via_children = children_reachable(conversation);
+        stats.unreachable_nodes = conversation
+            .mapping
+            .keys()
+            .map(String::as_str)
+            .filter(|id| {
+                ungrounded.contains(id) && !via_children.contains(id) && !on_branch.contains(id)
+            })
             .count();
 
         for entry in branch.messages(conversation) {
@@ -123,6 +137,81 @@ impl ConversationStats {
 
         stats
     }
+}
+
+/// Every node's distinct children, taking both edges as evidence.
+///
+/// `children` and `parent` are independent fields in the export and often
+/// disagree — a truncated export commonly ships a complete `parent` chain with
+/// every `children` list empty. Merging them into a set per node means a fork is
+/// counted whichever field records it, and counted once when both do.
+///
+/// Only ids present in the mapping are kept, so `children` entries naming nodes
+/// the export never included cannot inflate the count. O(V + E).
+fn merged_children(conversation: &Conversation) -> HashMap<&str, HashSet<&str>> {
+    let mut children_of: HashMap<&str, HashSet<&str>> = HashMap::new();
+
+    for (id, node) in &conversation.mapping {
+        let id = id.as_str();
+        for child in &node.children {
+            if let Some(child) = conversation.node(child).map(|_| child.as_str()) {
+                children_of.entry(id).or_default().insert(child);
+            }
+        }
+        // Not a let-chain: Cargo.toml declares rust-version 1.85 and those
+        // only stabilised in 1.88.
+        if let Some(parent) = node
+            .parent
+            .as_deref()
+            .filter(|parent| conversation.node(parent).is_some())
+        {
+            children_of.entry(parent).or_default().insert(id);
+        }
+    }
+
+    children_of
+}
+
+/// Ids reachable from a true root by following `children` only.
+///
+/// A *true* root is a node whose `parent` is `None`. Nodes with a dangling
+/// parent are deliberately not seeds here: treating them as roots is exactly
+/// what let a textbook orphan report as reachable.
+///
+/// Iterative and visited-guarded, so cycles and shared children cost one visit
+/// each. O(V + E).
+fn children_reachable(conversation: &Conversation) -> HashSet<&str> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut queue: VecDeque<&str> = VecDeque::new();
+
+    let mut seeds: Vec<&str> = conversation
+        .mapping
+        .iter()
+        .filter(|(_, node)| node.parent.is_none())
+        .map(|(id, _)| id.as_str())
+        .collect();
+    seeds.sort_unstable();
+    for seed in seeds {
+        if seen.insert(seed) {
+            queue.push_back(seed);
+        }
+    }
+
+    while let Some(id) = queue.pop_front() {
+        let Some(node) = conversation.node(id) else {
+            continue;
+        };
+        for child in &node.children {
+            let Some(child) = conversation.node(child).map(|_| child.as_str()) else {
+                continue;
+            };
+            if seen.insert(child) {
+                queue.push_back(child);
+            }
+        }
+    }
+
+    seen
 }
 
 #[cfg(test)]
@@ -344,13 +433,103 @@ mod tests {
         for conversation in graphs {
             let branch = active_branch(&conversation).expect("resolves");
             let stats = ConversationStats::compute(&conversation, &branch);
-            let off_branch = conversation.mapping.len() - branch.node_ids.len();
+            let off_branch = conversation
+                .mapping
+                .len()
+                .saturating_sub(branch.node_ids.len());
             assert!(
                 stats.unreachable_nodes <= off_branch,
                 "counted {} unreachable but only {off_branch} nodes are off the branch",
                 stats.unreachable_nodes
             );
         }
+    }
+
+    /// A regeneration recorded only through `parent` — every `children` list
+    /// empty — is still a fork. The children-only count called this shape
+    /// "0 branch points", a false claim about the conversation's shape.
+    #[test]
+    fn a_fork_recorded_only_through_parent_is_still_a_branch_point() {
+        let conversation = conversation(
+            Some("gen2"),
+            vec![
+                ("root", None, vec![], None),
+                ("u1", Some("root"), vec![], message(Role::User, "q")),
+                (
+                    "gen1",
+                    Some("u1"),
+                    vec![],
+                    message(Role::Assistant, "first"),
+                ),
+                (
+                    "gen2",
+                    Some("u1"),
+                    vec![],
+                    message(Role::Assistant, "second"),
+                ),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        let stats = ConversationStats::compute(&conversation, &branch);
+        assert_eq!(stats.branch_points, 1);
+        assert_eq!(stats.alternative_branches, 1);
+        assert_eq!(stats.unreachable_nodes, 0);
+    }
+
+    /// A fork both edges record is one fork. Merging the two must not
+    /// double-count it.
+    #[test]
+    fn a_fork_recorded_by_both_edges_counts_once() {
+        let conversation = conversation(
+            Some("gen2"),
+            vec![
+                ("root", None, vec!["u1"], None),
+                (
+                    "u1",
+                    Some("root"),
+                    vec!["gen1", "gen2"],
+                    message(Role::User, "q"),
+                ),
+                (
+                    "gen1",
+                    Some("u1"),
+                    vec![],
+                    message(Role::Assistant, "first"),
+                ),
+                (
+                    "gen2",
+                    Some("u1"),
+                    vec![],
+                    message(Role::Assistant, "second"),
+                ),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        let stats = ConversationStats::compute(&conversation, &branch);
+        assert_eq!(stats.branch_points, 1);
+        assert_eq!(stats.alternative_branches, 1);
+    }
+
+    /// A node connected by `children` but with a broken `parent` is not
+    /// stranded: one edge still ties it to the conversation.
+    #[test]
+    fn a_node_connected_by_only_one_edge_is_not_unreachable() {
+        let conversation = conversation(
+            Some("n1"),
+            vec![
+                ("root", None, vec!["n1", "odd"], None),
+                ("n1", Some("root"), vec![], message(Role::User, "hi")),
+                // Reachable through root's `children`, but its own parent is gone.
+                ("odd", Some("missing"), vec![], message(Role::User, "odd")),
+            ],
+        );
+
+        let branch = active_branch(&conversation).expect("resolves");
+        let stats = ConversationStats::compute(&conversation, &branch);
+        assert_eq!(stats.broken_parents, 1);
+        assert_eq!(stats.unreachable_nodes, 0);
     }
 
     #[test]
